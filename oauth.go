@@ -317,14 +317,6 @@ func authenticateWithOAuth() error {
 	return nil
 }
 
-// oauthCallbackHandler is no longer needed for Device Authorization Flow.
-// It is kept for historical context or if needed for other OAuth flows.
-func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
-	// This handler is part of the Authorization Code Flow, which is no longer used.
-	// It's included to satisfy http.HandleFunc in main.go, but it shouldn't be reached
-	// with the Device Authorization Flow.
-	http.Error(w, "Not Found", http.StatusNotFound)
-}
 
 // openBrowser opens the default browser with the given URL
 func openBrowser(url string) error {
@@ -345,34 +337,4 @@ func openBrowser(url string) error {
 }
 
 // authHandler handles the /auth endpoint to initiate the OAuth flow
-func authHandler(w http.ResponseWriter, r *http.Request) {
-	// Perform the OAuth device authorization flow
-	if err := authenticateWithOAuth(); err != nil {
-		http.Error(w, fmt.Sprintf("OAuth authentication failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Redirect user to the main page or show success message
-	fmt.Fprintf(w, `
-<!DOCTYPE html>
-<html>
-<head>
-	   <title>Authentication Successful</title>
-	   <style>
-	       body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
-	       .container { max-width: 500px; margin: 0 auto; }
-	       .success { color: #28a745; }
-	   </style>
-</head>
-<body>
-	   <div class="container">
-	       <h1 class="success">Authentication Successful!</h1>
-	       <p>You have successfully authenticated with Qwen.</p>
-	       <p>You can now close this window and return to the application.</p>
-	       <p><a href="/">Return to the main page</a></p>
-	   </div>
-</body>
-</html>
-`)
-}
 

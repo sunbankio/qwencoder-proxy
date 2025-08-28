@@ -460,8 +460,6 @@ func main() {
 	// Set up the HTTP handler for /v1/models
 	http.HandleFunc("/v1/models", modelsHandler)
 
-	// Set up OAuth handlers
-	http.HandleFunc("/oauth/callback", oauthCallbackHandler)
 
 	// Set up the general proxy handler for all other routes
 	http.HandleFunc("/", proxyHandler)
