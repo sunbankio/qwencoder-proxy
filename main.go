@@ -300,7 +300,41 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to read upstream response body: %v", readBodyErr), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("DEBUG_UPSTREAM_RAW_RESPONSE: %s", string(fullResponseBody)) // Added debug log
+	
+	// Parse response for debug logging, omitting message field
+	var debugResponseBody map[string]interface{}
+	if err := json.Unmarshal(fullResponseBody, &debugResponseBody); err == nil {
+		// Remove message field if it exists
+		if choices, ok := debugResponseBody["choices"].([]interface{}); ok {
+			for _, choice := range choices {
+				if choiceMap, ok := choice.(map[string]interface{}); ok {
+					if message, ok := choiceMap["message"].(map[string]interface{}); ok {
+						// Create a copy of message without content
+						sanitizedMessage := make(map[string]interface{})
+						for k, v := range message {
+							if k != "content" {
+								sanitizedMessage[k] = v
+							} else {
+								sanitizedMessage[k] = "[CONTENT OMITTED]"
+							}
+						}
+						choiceMap["message"] = sanitizedMessage
+					}
+				}
+			}
+		}
+		
+		// Convert back to JSON for logging
+		if sanitizedBody, err := json.Marshal(debugResponseBody); err == nil {
+			log.Printf("DEBUG_UPSTREAM_RAW_RESPONSE: %s", string(sanitizedBody))
+		} else {
+			// Fallback to original if marshaling fails
+			log.Printf("DEBUG_UPSTREAM_RAW_RESPONSE: %s", string(fullResponseBody))
+		}
+	} else {
+		// Fallback to original if parsing fails
+		log.Printf("DEBUG_UPSTREAM_RAW_RESPONSE: %s", string(fullResponseBody))
+	}
 
 	var qwenResponse map[string]interface{}
 	if err := json.Unmarshal(fullResponseBody, &qwenResponse); err != nil {
