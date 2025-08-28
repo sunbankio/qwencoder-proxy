@@ -256,9 +256,40 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		Transport: transport,
 	}
 
+	// Channel to signal when upstream response is received
+	responseReceived := make(chan bool, 1)
+	
+	// Start goroutine to send "still working" indicators
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				// Send SSE comment to indicate we're still working
+				fmt.Fprintf(w, ": still working\n\n")
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			case <-responseReceived:
+				// Stop sending indicators when response is received
+				return
+			case <-ctx.Done():
+				// Stop if client disconnects or request times out
+				return
+			}
+		}
+	}()
+
 	// Send the request to the target endpoint
 	resp, err := client.Do(req)
 	if err != nil {
+		// Signal that we're done (stop the indicator goroutine)
+		select {
+		case responseReceived <- true:
+		default:
+		}
+		
 		// Check if the error was due to context cancellation (client disconnect or timeout)
 		if ctx.Err() == context.Canceled {
 			log.Printf("Client disconnected, cancelling Qwen request: %s %s", r.Method, r.URL.Path)
@@ -272,6 +303,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close() // Close the upstream response body
+
+	// Signal that we've received the response (stop the indicator goroutine)
+	responseReceived <- true
 
 	// Read the entire response body from Qwen
 	fullResponseBody, readBodyErr := io.ReadAll(resp.Body)
