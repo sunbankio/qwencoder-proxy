@@ -17,7 +17,7 @@ import (
 
 // Constants
 const (
-	DefaultQwenBaseURL   = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	DefaultQwenBaseURL   = "https://portal.qwen.ai/v1"
 	Port                 = "8143"
 	TokenRefreshBufferMs = 30 * 1000 // 30 seconds
 )
@@ -167,9 +167,6 @@ func getValidTokenAndEndpoint() (string, string, error) {
 	if !bytes.HasSuffix([]byte(baseEndpoint), []byte(suffix)) {
 		baseEndpoint = baseEndpoint + suffix
 	}
-
-	log.Printf("Using endpoint: %s", baseEndpoint)
-
 	return credentials.AccessToken, baseEndpoint, nil
 }
 
@@ -287,7 +284,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to read upstream response body: %v", readBodyErr), http.StatusInternalServerError)
 		return
 	}
-	
+
 	// Parse response for debug logging, omitting message field
 	var debugResponseBody map[string]interface{}
 	if err := json.Unmarshal(fullResponseBody, &debugResponseBody); err == nil {
@@ -310,7 +307,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		
+
 		// Convert back to JSON for logging
 		if sanitizedBody, err := json.Marshal(debugResponseBody); err == nil {
 			log.Printf("DEBUG_UPSTREAM_RAW_RESPONSE: %s", string(sanitizedBody))
@@ -359,10 +356,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				"index": 0,
 			},
 		},
-		"object": "chat.completion.chunk",
+		"object":  "chat.completion.chunk",
 		"created": time.Now().Unix(),
-		"model": qwenResponse["model"],
-		"id": qwenResponse["id"],
+		"model":   qwenResponse["model"],
+		"id":      qwenResponse["id"],
 	}
 
 	jsonChunk, marshalErr := json.Marshal(chunk)
