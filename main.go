@@ -391,9 +391,30 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Fake streaming request completed. Path: %s, Model: %s, Duration: %s, RequestID: %s",
 		r.URL.Path, modelName, time.Since(startTime).String(), requestID)
 }
+// modelsHandler handles requests to /v1/models and serves the models.json file
+func modelsHandler(w http.ResponseWriter, r *http.Request) {
+	// Set the correct content type for JSON
+	w.Header().Set("Content-Type", "application/json")
+	
+	// Read the models.json file
+	modelsData, err := os.ReadFile("models.json")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to read models.json: %v", err), http.StatusInternalServerError)
+		return
+	}
+	
+	// Write the file content to the response
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(modelsData); err != nil {
+		log.Printf("Failed to write response: %v", err)
+	}
+}
 
 func main() {
-	// Set up the HTTP handler
+	// Set up the HTTP handler for /v1/models
+	http.HandleFunc("/v1/models", modelsHandler)
+	
+	// Set up the general proxy handler for all other routes
 	http.HandleFunc("/", proxyHandler)
 
 	// Start the server
