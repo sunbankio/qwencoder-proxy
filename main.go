@@ -22,7 +22,7 @@ const (
 	TokenRefreshBufferMs = 30 * 1000 // 30 seconds
 )
 
-// OAuthCreds represents the structure of the oauth_creds.json file
+// OAuthCreds represents the structure of the qwenproxy_creds.json file
 type OAuthCreds struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
@@ -34,10 +34,10 @@ type OAuthCreds struct {
 // getQwenCredentialsPath returns the path to the Qwen credentials file
 func getQwenCredentialsPath() string {
 	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".qwen", "oauth_creds.json")
+	return filepath.Join(homeDir, ".qwen", "qwenproxy_creds.json")
 }
 
-// loadQwenCredentials loads the Qwen credentials from the oauth_creds.json file
+// loadQwenCredentials loads the Qwen credentials from the qwenproxy_creds.json file
 func loadQwenCredentials() (OAuthCreds, error) {
 	credsPath := getQwenCredentialsPath()
 	file, err := os.Open(credsPath)
@@ -135,7 +135,8 @@ func refreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
 func getValidTokenAndEndpoint() (string, string, error) {
 	credentials, err := loadQwenCredentials()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to load Qwen credentials: %v", err)
+		// If credentials file doesn't exist, return a special error that can be handled by the caller
+		return "", "", fmt.Errorf("credentials not found: %v. Please authenticate with Qwen by visiting /auth endpoint", err)
 	}
 
 	// If token is expired or about to expire, try to refresh it
@@ -143,7 +144,8 @@ func getValidTokenAndEndpoint() (string, string, error) {
 		log.Println("Token is expired or about to expire, attempting to refresh...")
 		credentials, err = refreshAccessToken(credentials)
 		if err != nil {
-			return "", "", fmt.Errorf("failed to refresh token: %v", err)
+			// If token refresh fails, return a special error that can be handled by the caller
+			return "", "", fmt.Errorf("failed to refresh token: %v. Please re-authenticate with Qwen by visiting /auth endpoint", err)
 		}
 		log.Println("Token successfully refreshed")
 	}
@@ -175,6 +177,15 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Get valid token and endpoint
 	accessToken, targetEndpoint, err := getValidTokenAndEndpoint()
 	if err != nil {
+		// Check if the error is related to authentication
+		errorMsg := err.Error()
+		// If authentication is required, signal to the user to restart the proxy for authentication.
+		// The authentication flow will now be handled during server startup.
+		if strings.Contains(errorMsg, "credentials not found") || strings.Contains(errorMsg, "failed to refresh token") {
+			http.Error(w, fmt.Sprintf("Authentication required: %v. Please restart the proxy to re-authenticate.", err), http.StatusUnauthorized)
+			return
+		}
+		// For other errors, return a generic error message
 		http.Error(w, fmt.Sprintf("Failed to get valid token: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -258,7 +269,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Channel to signal when upstream response is received
 	responseReceived := make(chan bool, 1)
-	
+
 	// Start goroutine to send "still working" indicators
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
@@ -289,7 +300,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		case responseReceived <- true:
 		default:
 		}
-		
+
 		// Check if the error was due to context cancellation (client disconnect or timeout)
 		if ctx.Err() == context.Canceled {
 			log.Printf("Client disconnected, cancelling Qwen request: %s %s", r.Method, r.URL.Path)
@@ -422,21 +433,22 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		requestID = id
 	}
 
-	log.Printf("Fake streaming request completed. Path: %s, Model: %s, Duration: %s, RequestID: %s",
+	log.Printf("Streaming response completed. Path: %s, Model: %s, Duration: %s, RequestID: %s",
 		r.URL.Path, modelName, time.Since(startTime).String(), requestID)
 }
+
 // modelsHandler handles requests to /v1/models and serves the models.json file
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
 	// Set the correct content type for JSON
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	// Read the models.json file
 	modelsData, err := os.ReadFile("models.json")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to read models.json: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	// Write the file content to the response
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(modelsData); err != nil {
@@ -447,9 +459,41 @@ func modelsHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	// Set up the HTTP handler for /v1/models
 	http.HandleFunc("/v1/models", modelsHandler)
-	
+
+	// Set up OAuth handlers
+	http.HandleFunc("/oauth/callback", oauthCallbackHandler)
+
 	// Set up the general proxy handler for all other routes
 	http.HandleFunc("/", proxyHandler)
+
+	// Check for credentials on startup
+	log.Println("Checking Qwen credentials...")
+	_, _, err := getValidTokenAndEndpoint()
+	if err != nil {
+		errorMsg := err.Error()
+		if strings.Contains(errorMsg, "credentials not found") || strings.Contains(errorMsg, "failed to refresh token") {
+			log.Println("Credentials not found or invalid. Initiating authentication flow...")
+			// Ensure the credentials file is removed before attempting authentication
+			credsPath := getQwenCredentialsPath()
+			if _, fileErr := os.Stat(credsPath); fileErr == nil {
+				if removeErr := os.Remove(credsPath); removeErr != nil {
+					log.Printf("Failed to remove existing credentials file %s: %v", credsPath, removeErr)
+				} else {
+					log.Printf("Successfully removed existing credentials file: %s", credsPath)
+				}
+			}
+
+			authErr := authenticateWithOAuth()
+			if authErr != nil {
+				log.Fatalf("Authentication failed during startup: %v", authErr)
+			}
+			log.Println("Authentication successful. Starting proxy server...")
+		} else {
+			log.Fatalf("Failed to check credentials on startup: %v", err)
+		}
+	} else {
+		log.Println("Credentials found and valid. Starting proxy server...")
+	}
 
 	// Start the server
 	fmt.Printf("Proxy server starting on port %s\n", Port)
