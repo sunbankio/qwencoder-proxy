@@ -20,9 +20,9 @@ import (
 
 // OAuth constants
 const (
-	QwenOAuthTokenURL    = "https://chat.qwen.ai/api/v1/oauth2/token"
-	QwenOAuthClientID    = "f0304373b74a44d2b584a3fb70ca9e56"
-	QwenOAuthScope       = "openid profile email model.completion"
+	QwenOAuthTokenURL = "https://chat.qwen.ai/api/v1/oauth2/token"
+	QwenOAuthClientID = "f0304373b74a44d2b584a3fb70ca9e56"
+	QwenOAuthScope    = "openid profile email model.completion"
 )
 
 // PKCEParams holds the parameters for PKCE
@@ -42,11 +42,11 @@ type OAuthTokenResponse struct {
 
 // DeviceAuthResponse represents the response from the device authorization endpoint
 type DeviceAuthResponse struct {
-	DeviceCode            string `json:"device_code"`
-	UserCode              string `json:"user_code"`
-	VerificationURI       string `json:"verification_uri"`
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
 	VerificationURIComplete string `json:"verification_uri_complete"`
-	ExpiresIn             int64  `json:"expires_in"`
+	ExpiresIn               int64  `json:"expires_in"`
 }
 
 // generateCodeVerifier generates a random code verifier for PKCE
@@ -132,7 +132,6 @@ func initiateDeviceAuth(pkceParams *PKCEParams) (*DeviceAuthResponse, error) {
 
 	return &deviceAuthResponse, nil
 }
-
 
 // exchangeDeviceCodeForToken exchanges the device code for access/refresh tokens
 func exchangeDeviceCodeForToken(deviceCode, codeVerifier string) (*OAuthTokenResponse, error) {
@@ -226,10 +225,10 @@ func saveCredentials(tokenResponse *OAuthTokenResponse) error {
 func pollForToken(deviceCode, codeVerifier string) (*OAuthTokenResponse, error) {
 	// Polling interval in seconds
 	pollInterval := 5 * time.Second
-	
+
 	// Maximum number of attempts (30 minutes with 5 second intervals)
 	maxAttempts := 360
-	
+
 	// Poll for the token
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		// Try to exchange the device code for tokens
@@ -242,7 +241,7 @@ func pollForToken(deviceCode, codeVerifier string) (*OAuthTokenResponse, error) 
 				time.Sleep(pollInterval)
 				continue
 			}
-			
+
 			// Check if the error is a slow down error
 			// In this case, we should increase our polling interval
 			if strings.Contains(err.Error(), "slow_down") {
@@ -251,19 +250,18 @@ func pollForToken(deviceCode, codeVerifier string) (*OAuthTokenResponse, error) 
 				time.Sleep(pollInterval)
 				continue
 			}
-			
+
 			// For any other error, return it
 			return nil, fmt.Errorf("failed to exchange device code for token: %v", err)
 		}
-		
+
 		// If we got a successful response, return it
 		return tokenResponse, nil
 	}
-	
+
 	// If we've exhausted our attempts, return a timeout error
 	return nil, fmt.Errorf("timeout waiting for device authorization")
 }
-
 
 // authenticateWithOAuth performs the complete OAuth device authorization flow
 func authenticateWithOAuth() error {
@@ -317,7 +315,6 @@ func authenticateWithOAuth() error {
 	return nil
 }
 
-
 // openBrowser opens the default browser with the given URL
 func openBrowser(url string) error {
 	var err error
@@ -335,6 +332,3 @@ func openBrowser(url string) error {
 
 	return err
 }
-
-// authHandler handles the /auth endpoint to initiate the OAuth flow
-
