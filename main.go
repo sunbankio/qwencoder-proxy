@@ -201,6 +201,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	targetURL := targetEndpoint + requestPath
 
 	// Create a context with a timeout for the upstream request
+	// The context will be automatically cancelled if the client disconnects
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second) // 90 seconds timeout
 	defer cancel()                                                  // Ensure the context is cancelled to release resources
 
@@ -274,6 +275,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Send the request to the target endpoint
 	resp, err := client.Do(req)
 	if err != nil {
+		// Check if the error was due to context cancellation (client disconnect or timeout)
+		if ctx.Err() == context.Canceled {
+			log.Printf("Client disconnected, cancelling Qwen request: %s %s", r.Method, r.URL.Path)
+			return
+		}
 		if ctx.Err() == context.DeadlineExceeded {
 			http.Error(w, "Upstream request timed out", http.StatusGatewayTimeout)
 			return
@@ -286,6 +292,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Read the entire response body from Qwen
 	fullResponseBody, readBodyErr := io.ReadAll(resp.Body)
 	if readBodyErr != nil {
+		// Check if the error was due to context cancellation (client disconnect)
+		if ctx.Err() == context.Canceled {
+			log.Printf("Client disconnected during response reading: %s %s", r.Method, r.URL.Path)
+			return
+		}
 		http.Error(w, fmt.Sprintf("Failed to read upstream response body: %v", readBodyErr), http.StatusInternalServerError)
 		return
 	}
