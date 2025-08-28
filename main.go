@@ -173,17 +173,6 @@ func getValidTokenAndEndpoint() (string, string, error) {
 	return credentials.AccessToken, baseEndpoint, nil
 }
 
-// isBrokenPipe checks if the error indicates a broken pipe or connection reset
-func isBrokenPipe(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "broken pipe") ||
-		strings.Contains(errStr, "connection reset by peer") ||
-		strings.Contains(errStr, "connection refused") // Although less common for client disconnect, can happen if target closes
-}
-
 // proxyHandler handles incoming requests and proxies them to the target endpoint
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Get valid token and endpoint
@@ -229,10 +218,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure "stream" is set to false for the request to Qwen
 	originalBody["stream"] = false
-	// If stream_options is present, remove it for non-streaming requests
-	if _, ok := originalBody["stream_options"]; ok {
-		delete(originalBody, "stream_options")
-	}
+	// Remove stream_options for non-streaming requests
+	delete(originalBody, "stream_options")
 	modifiedBodyBytes, err := json.Marshal(originalBody)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to marshal modified request body: %v", err), http.StatusInternalServerError)
