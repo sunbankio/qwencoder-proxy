@@ -10,4 +10,5 @@ const (
 	IdleConnTimeoutSeconds  = 90
 	RequestTimeoutSeconds   = 300
 	StreamingTimeoutSeconds = 300
+	ReadTimeoutSeconds      = 45
 )

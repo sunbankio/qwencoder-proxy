@@ -82,7 +82,7 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 		http.Error(w, fmt.Sprintf("Failed to marshal streaming request body: %v", err), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("[START]: %s %s", r.Method, r.URL.Path)
+	log.Printf("[REQUESTING]: %d bytes %s to %s", len(modifiedBodyBytes), r.Method, r.URL.Path)
 
 	// Create a new request to the target endpoint with modified body
 	req, err := http.NewRequestWithContext(ctx, r.Method, targetEndpoint, io.NopCloser(bytes.NewReader(modifiedBodyBytes)))
@@ -150,11 +150,20 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 		}
 	}()
 
+	// Create a timer for read timeout
+	readTimeout := time.NewTimer(time.Duration(ReadTimeoutSeconds) * time.Second)
+	defer readTimeout.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			// Client disconnected, stop proxying
 			log.Printf("Client disconnected: %v", ctx.Err())
+			return // Exit the handler
+		case <-readTimeout.C:
+			// Read timeout exceeded
+			log.Printf("Read timeout exceeded (%d seconds)", ReadTimeoutSeconds)
+			http.Error(w, fmt.Sprintf("Read timeout exceeded (%d seconds)", ReadTimeoutSeconds), http.StatusRequestTimeout)
 			return // Exit the handler
 		case line := <-lineChan:
 			// Remove the debug logging of raw lines
@@ -264,6 +273,14 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 					}
 				}
 			}
+			// Reset the read timeout timer since we received a chunk
+			if !readTimeout.Stop() {
+				select {
+				case <-readTimeout.C:
+				default:
+				}
+			}
+			readTimeout.Reset(time.Duration(ReadTimeoutSeconds) * time.Second)
 		case err := <-errChan:
 			if err == io.EOF {
 				// Log the final information when the stream ends
