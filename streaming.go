@@ -31,11 +31,11 @@ type Delta struct {
 }
 
 type Usage struct {
-	InputTokens        int                `json:"input_tokens,omitempty"`
-	InputTokensDetails *TokensDetails     `json:"input_tokens_details,omitempty"`
-	OutputTokens       int                `json:"output_tokens,omitempty"`
-	OutputTokensDetails *TokensDetails    `json:"output_tokens_details,omitempty"`
-	TotalTokens        int                `json:"total_tokens,omitempty"`
+	InputTokens         int            `json:"input_tokens,omitempty"`
+	InputTokensDetails  *TokensDetails `json:"input_tokens_details,omitempty"`
+	OutputTokens        int            `json:"output_tokens,omitempty"`
+	OutputTokensDetails *TokensDetails `json:"output_tokens_details,omitempty"`
+	TotalTokens         int            `json:"total_tokens,omitempty"`
 }
 
 type TokensDetails struct {
@@ -55,17 +55,17 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 	// Variables to track usage information
 	inputTokens := 0
 	outputTokens := 0
-	var rawUsage *Usage  // Variable to store raw usage structure
+	var rawUsage *Usage // Variable to store raw usage structure
 	modelName := ""
-	
+
 	// Initialize with values from the original request if available
 	if model, ok := originalBody["model"].(string); ok {
 		modelName = model
 	}
-	
+
 	// Create a context with a timeout for the upstream request
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second) // 90 seconds timeout
-	defer cancel()                                                  // Ensure the context is cancelled to release resources
+	ctx, cancel := context.WithTimeout(r.Context(), StreamingTimeoutSeconds*time.Second) // 90 seconds timeout
+	defer cancel()                                                                       // Ensure the context is cancelled to release resources
 
 	// For streaming requests, set the stream flag to true for the upstream request
 	originalBody["stream"] = true
@@ -76,13 +76,13 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 	}
 	streamOptions["include_usage"] = true
 	originalBody["stream_options"] = streamOptions
-	
+
 	modifiedBodyBytes, err := json.Marshal(originalBody)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to marshal streaming request body: %v", err), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Starting streaming request to Qwen: %s %s", r.Method, r.URL.Path)
+	log.Printf("[START]: %s %s", r.Method, r.URL.Path)
 
 	// Create a new request to the target endpoint with modified body
 	req, err := http.NewRequestWithContext(ctx, r.Method, targetEndpoint, io.NopCloser(bytes.NewReader(modifiedBodyBytes)))
@@ -102,12 +102,12 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 
 	// Configure a custom HTTP client with connection pool optimization and timeout
 	transport := &http.Transport{
-		MaxIdleConns:        100,              // Maximum idle connections across all hosts
-		MaxIdleConnsPerHost: 10,               // Maximum idle connections per host
-		IdleConnTimeout:     90 * time.Second, // How long an idle connection is kept alive
+		MaxIdleConns:        MaxIdleConns,                         // Maximum idle connections across all hosts
+		MaxIdleConnsPerHost: MaxIdleConnsPerHost,                  // Maximum idle connections per host
+		IdleConnTimeout:     IdleConnTimeoutSeconds * time.Second, // How long an idle connection is kept alive
 	}
 	client := &http.Client{
-		Timeout:   90 * time.Second, // Timeout for the entire request, including connection, send, and receive
+		Timeout:   RequestTimeoutSeconds * time.Second, // Timeout for the entire request, including connection, send, and receive
 		Transport: transport,
 	}
 
@@ -159,11 +159,11 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 		case line := <-lineChan:
 			// Remove the debug logging of raw lines
 			// log.Printf("DEBUG_UPSTREAM_RAW_LINE: %s", strings.TrimSpace(line))
-			
+
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
 				data = strings.TrimSpace(data)
-				
+
 				// Handle [DONE] message properly
 				if data == "[DONE]" {
 					fmt.Fprintf(w, "data: [DONE]\n\n")
@@ -174,22 +174,22 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 					duration := time.Since(startTime).Milliseconds()
 					if rawUsage != nil {
 						usageBytes, _ := json.Marshal(rawUsage)
-						log.Printf("Streaming completed - Model: %s, Raw Usage: %s, Duration: %d ms",
+						log.Printf("[DONE] - Model: %s, Raw Usage: %s, Duration: %d ms",
 							modelName, string(usageBytes), duration)
 					} else {
-						log.Printf("Streaming completed - Model: %s, Input Tokens: %d, Output Tokens: %d, Duration: %d ms",
+						log.Printf("[DONE] - Model: %s, Input Tokens: %d, Output Tokens: %d, Duration: %d ms",
 							modelName, inputTokens, outputTokens, duration)
 					}
 					return // Exit on [DONE]
 				}
-				
+
 				var chunk ChatCompletionChunk
 				unmarshalErr := json.Unmarshal([]byte(data), &chunk)
 				if unmarshalErr != nil {
 					log.Printf("Error unmarshalling streaming JSON: %v, Data: %s", unmarshalErr, data)
 					continue
 				}
-				
+
 				// Handle special case: final usage chunk with empty choices array
 				if len(chunk.Choices) == 0 && chunk.Usage != nil {
 					// This is a final usage chunk, update our token counts
@@ -209,12 +209,12 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 					// Continue to the next chunk without sending this one to the client
 					continue
 				}
-				
+
 				// Update model name if available in the chunk
 				if chunk.Model != "" {
 					modelName = chunk.Model
 				}
-				
+
 				// Track token usage if available (for standard chunks with non-null usage)
 				if chunk.Usage != nil {
 					if chunk.Usage.InputTokens > 0 {
@@ -270,10 +270,10 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 				duration := time.Since(startTime).Milliseconds()
 				if rawUsage != nil {
 					usageBytes, _ := json.Marshal(rawUsage)
-					log.Printf("Streaming completed - Model: %s, Raw Usage: %s, Duration: %d ms",
+					log.Printf("[DONE] - Model: %s, Raw Usage: %s, Duration: %d ms",
 						modelName, string(usageBytes), duration)
 				} else {
-					log.Printf("Streaming completed - Model: %s, Input Tokens: %d, Output Tokens: %d, Duration: %d ms",
+					log.Printf("[DONE] - Model: %s, Input Tokens: %d, Output Tokens: %d, Duration: %d ms",
 						modelName, inputTokens, outputTokens, duration)
 				}
 				log.Println("Upstream stream ended.")

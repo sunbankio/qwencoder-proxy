@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,13 +9,6 @@ import (
 	"os"
 	"strings"
 	"time"
-)
-
-// Constants
-const (
-	DefaultQwenBaseURL   = "https://portal.qwen.ai/v1"
-	Port                 = "8143"
-	TokenRefreshBufferMs = 30 * 1000 // 30 seconds
 )
 
 // getValidTokenAndEndpoint gets a valid token and determines the correct endpoint
@@ -49,12 +41,12 @@ func getValidTokenAndEndpoint() (string, string, error) {
 	}
 
 	// Normalize the URL: add protocol if missing, ensure /v1 suffix
-	if !bytes.HasPrefix([]byte(baseEndpoint), []byte("http")) {
+	if !strings.HasPrefix(baseEndpoint, "http") {
 		baseEndpoint = "https://" + baseEndpoint
 	}
 
 	const suffix = "/v1"
-	if !bytes.HasSuffix([]byte(baseEndpoint), []byte(suffix)) {
+	if !strings.HasSuffix(baseEndpoint, suffix) {
 		baseEndpoint = baseEndpoint + suffix
 	}
 	return credentials.AccessToken, baseEndpoint, nil
@@ -80,7 +72,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Construct the full target URL
 	requestPath := r.URL.Path
-	if bytes.HasPrefix([]byte(requestPath), []byte("/v1")) && bytes.HasSuffix([]byte(targetEndpoint), []byte("/v1")) {
+	if strings.HasPrefix(requestPath, "/v1") && strings.HasSuffix(targetEndpoint, "/v1") {
 		requestPath = strings.TrimPrefix(requestPath, "/v1")
 	}
 	targetURL := targetEndpoint + requestPath

@@ -59,6 +59,33 @@ type DeviceAuthResponse struct {
 	ExpiresIn               int64  `json:"expires_in"`
 }
 
+// saveOAuthCreds saves OAuth credentials to the qwenproxy_creds.json file
+func saveOAuthCreds(creds OAuthCreds) error {
+	credsPath := getQwenCredentialsPath()
+	
+	// Create the directory if it doesn't exist
+	dir := filepath.Dir(credsPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("failed to create credentials directory: %v", err)
+	}
+	
+	// Create or overwrite the file
+	file, err := os.Create(credsPath)
+	if err != nil {
+		return fmt.Errorf("failed to create credentials file: %v", err)
+	}
+	defer file.Close()
+	
+	// Encode and write the credentials
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(creds); err != nil {
+		return fmt.Errorf("failed to encode credentials: %v", err)
+	}
+	
+	return nil
+}
+
 // getQwenCredentialsPath returns the path to the Qwen credentials file
 func getQwenCredentialsPath() string {
 	homeDir, _ := os.UserHomeDir()
@@ -140,18 +167,9 @@ func refreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
 		ExpiryDate:   time.Now().UnixMilli() + int64(expiresIn*1000),
 	}
 
-	// Save updated credentials
-	credsPath := getQwenCredentialsPath()
-	file, err := os.Create(credsPath)
-	if err != nil {
+	// Save updated credentials using the shared function
+	if err := saveOAuthCreds(updatedCredentials); err != nil {
 		return OAuthCreds{}, fmt.Errorf("failed to save updated credentials: %v", err)
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(updatedCredentials); err != nil {
-		return OAuthCreds{}, fmt.Errorf("failed to encode updated credentials: %v", err)
 	}
 
 	return updatedCredentials, nil
@@ -290,19 +308,6 @@ func exchangeDeviceCodeForToken(deviceCode, codeVerifier string) (*OAuthTokenRes
 
 // saveCredentials saves the OAuth credentials to the qwenproxy_creds.json file
 func SaveCredentials(tokenResponse *OAuthTokenResponse) error {
-	// Get the path to the credentials file
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get user home directory: %v", err)
-	}
-	credsPath := filepath.Join(homeDir, ".qwen", "qwenproxy_creds.json")
-
-	// Create the directory if it doesn't exist
-	dir := filepath.Dir(credsPath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("failed to create credentials directory: %v", err)
-	}
-
 	// Create the credentials structure
 	creds := OAuthCreds{
 		AccessToken:  tokenResponse.AccessToken,
@@ -312,21 +317,8 @@ func SaveCredentials(tokenResponse *OAuthTokenResponse) error {
 		ExpiryDate:   time.Now().UnixMilli() + tokenResponse.ExpiresIn*1000,
 	}
 
-	// Create or overwrite the file
-	file, err := os.Create(credsPath)
-	if err != nil {
-		return fmt.Errorf("failed to create credentials file: %v", err)
-	}
-	defer file.Close()
-
-	// Encode and write the credentials
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(creds); err != nil {
-		return fmt.Errorf("failed to encode credentials: %v", err)
-	}
-
-	return nil
+	// Save credentials using the shared function
+	return saveOAuthCreds(creds)
 }
 
 // pollForToken polls the token endpoint with the device code until successful or timeout
