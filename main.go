@@ -2,15 +2,12 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -21,115 +18,6 @@ const (
 	Port                 = "8143"
 	TokenRefreshBufferMs = 30 * 1000 // 30 seconds
 )
-
-// OAuthCreds represents the structure of the qwenproxy_creds.json file
-type OAuthCreds struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	RefreshToken string `json:"refresh_token"`
-	ResourceURL  string `json:"resource_url"`
-	ExpiryDate   int64  `json:"expiry_date"`
-}
-
-// getQwenCredentialsPath returns the path to the Qwen credentials file
-func getQwenCredentialsPath() string {
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".qwen", "qwenproxy_creds.json")
-}
-
-// loadQwenCredentials loads the Qwen credentials from the qwenproxy_creds.json file
-func loadQwenCredentials() (OAuthCreds, error) {
-	credsPath := getQwenCredentialsPath()
-	file, err := os.Open(credsPath)
-	if err != nil {
-		return OAuthCreds{}, fmt.Errorf("failed to open credentials file: %v", err)
-	}
-	defer file.Close()
-
-	var creds OAuthCreds
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&creds); err != nil {
-		return OAuthCreds{}, fmt.Errorf("failed to decode credentials file: %v", err)
-	}
-
-	return creds, nil
-}
-
-// isTokenValid checks if the token is still valid
-func isTokenValid(credentials OAuthCreds) bool {
-	if credentials.ExpiryDate == 0 {
-		return false
-	}
-	// Add 30 second buffer
-	return time.Now().UnixMilli() < credentials.ExpiryDate-TokenRefreshBufferMs
-}
-
-// refreshAccessToken refreshes the OAuth token using the refresh token
-func refreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
-	if credentials.RefreshToken == "" {
-		return OAuthCreds{}, fmt.Errorf("no refresh token available")
-	}
-
-	const QwenOAuthTokenEndpoint = "https://chat.qwen.ai/api/v1/oauth2/token"
-	const QwenOAuthClientID = "f0304373b74a44d2b584a3fb70ca9e56"
-
-	bodyData := map[string]string{
-		"grant_type":    "refresh_token",
-		"refresh_token": credentials.RefreshToken,
-		"client_id":     QwenOAuthClientID,
-	}
-
-	resp, err := http.Post(QwenOAuthTokenEndpoint, "application/x-www-form-urlencoded",
-		bytes.NewBufferString(fmt.Sprintf("grant_type=%s&refresh_token=%s&client_id=%s",
-			bodyData["grant_type"], bodyData["refresh_token"], bodyData["client_id"])))
-	if err != nil {
-		return OAuthCreds{}, fmt.Errorf("token refresh request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode == 400 {
-			return OAuthCreds{}, fmt.Errorf("refresh token expired or invalid. Please re-authenticate with Qwen CLI using '/auth'. Response: %s", string(body))
-		}
-		return OAuthCreds{}, fmt.Errorf("token refresh failed: %d %s. Response: %s", resp.StatusCode, resp.Status, string(body))
-	}
-
-	var tokenData map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenData); err != nil {
-		return OAuthCreds{}, fmt.Errorf("failed to decode token response: %v", err)
-	}
-
-	if errorMsg, ok := tokenData["error"]; ok {
-		return OAuthCreds{}, fmt.Errorf("token refresh failed: %v - %v", errorMsg, tokenData["error_description"])
-	}
-
-	// Update credentials with new token
-	expiresIn, _ := tokenData["expires_in"].(float64)
-	updatedCredentials := OAuthCreds{
-		AccessToken:  tokenData["access_token"].(string),
-		TokenType:    tokenData["token_type"].(string),
-		RefreshToken: tokenData["refresh_token"].(string),
-		ResourceURL:  tokenData["resource_url"].(string),
-		ExpiryDate:   time.Now().UnixMilli() + int64(expiresIn*1000),
-	}
-
-	// Save updated credentials
-	credsPath := getQwenCredentialsPath()
-	file, err := os.Create(credsPath)
-	if err != nil {
-		return OAuthCreds{}, fmt.Errorf("failed to save updated credentials: %v", err)
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(updatedCredentials); err != nil {
-		return OAuthCreds{}, fmt.Errorf("failed to encode updated credentials: %v", err)
-	}
-
-	return updatedCredentials, nil
-}
 
 // getValidTokenAndEndpoint gets a valid token and determines the correct endpoint
 func getValidTokenAndEndpoint() (string, string, error) {
@@ -197,14 +85,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	targetURL := targetEndpoint + requestPath
 
-	// Create a context with a timeout for the upstream request
-	// The context will be automatically cancelled if the client disconnects
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second) // 90 seconds timeout
-	defer cancel()                                                  // Ensure the context is cancelled to release resources
-
-	// Read the original request body to modify it for non-streaming
+	// Read the original request body to determine if it's streaming
 	var originalBody map[string]interface{}
 	var requestBodyBytes []byte
+
 	if r.Body != nil {
 		requestBodyBytes, err = io.ReadAll(r.Body)
 		if err != nil {
@@ -224,217 +108,17 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		originalBody = make(map[string]interface{})
 	}
 
-	// Ensure "stream" is set to false for the request to Qwen
-	originalBody["stream"] = false
-	// Remove stream_options for non-streaming requests
-	delete(originalBody, "stream_options")
-	modifiedBodyBytes, err := json.Marshal(originalBody)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to marshal modified request body: %v", err), http.StatusInternalServerError)
+	// Check if client request is streaming
+	isClientStreaming, _ := originalBody["stream"].(bool)
+
+	// If not streaming, return a 400 Bad Request as per the user's instructions.
+	if !isClientStreaming {
+		http.Error(w, "Non-streaming requests are not supported yet. Please send a streaming request.", http.StatusBadRequest)
 		return
 	}
 
-	// Create a new request to the target endpoint with modified body
-	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, io.NopCloser(bytes.NewReader(modifiedBodyBytes)))
-	if err != nil {
-		http.Error(w, "Failed to create proxy request with modified body", http.StatusInternalServerError)
-		return
-	}
-	req.ContentLength = int64(len(modifiedBodyBytes))
-
-	// Start timer for duration logging
-	startTime := time.Now()
-
-	log.Printf("Starting non-streaming request to Qwen: %s %s", r.Method, r.URL.Path)
-
-	// Copy headers from original request, but set necessary ones
-	// mimicking exactly what Qwen CLI uses for non-streaming
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json") // Always JSON for body
-	req.Header.Set("User-Agent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH))
-	req.Header.Set("X-DashScope-CacheControl", "enable")
-	req.Header.Set("X-DashScope-UserAgent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH))
-	req.Header.Set("X-DashScope-AuthType", "qwen-oauth")
-
-	// Configure a custom HTTP client with connection pool optimization and timeout
-	transport := &http.Transport{
-		MaxIdleConns:        100,              // Maximum idle connections across all hosts
-		MaxIdleConnsPerHost: 10,               // Maximum idle connections per host
-		IdleConnTimeout:     90 * time.Second, // How long an idle connection is kept alive
-	}
-	client := &http.Client{
-		Timeout:   90 * time.Second, // Timeout for the entire request, including connection, send, and receive
-		Transport: transport,
-	}
-
-	// Channel to signal when upstream response is received
-	responseReceived := make(chan bool, 1)
-
-	// Start goroutine to send "still working" indicators
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				// Send SSE comment to indicate we're still working
-				fmt.Fprintf(w, ": still working\n\n")
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
-				}
-			case <-responseReceived:
-				// Stop sending indicators when response is received
-				return
-			case <-ctx.Done():
-				// Stop if client disconnects or request times out
-				return
-			}
-		}
-	}()
-
-	// Send the request to the target endpoint
-	resp, err := client.Do(req)
-	if err != nil {
-		// Signal that we're done (stop the indicator goroutine)
-		select {
-		case responseReceived <- true:
-		default:
-		}
-
-		// Check if the error was due to context cancellation (client disconnect or timeout)
-		if ctx.Err() == context.Canceled {
-			log.Printf("Client disconnected, cancelling Qwen request: %s %s", r.Method, r.URL.Path)
-			return
-		}
-		if ctx.Err() == context.DeadlineExceeded {
-			http.Error(w, "Upstream request timed out", http.StatusGatewayTimeout)
-			return
-		}
-		http.Error(w, fmt.Sprintf("Failed to send request to target endpoint: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close() // Close the upstream response body
-
-	// Signal that we've received the response (stop the indicator goroutine)
-	responseReceived <- true
-
-	// Read the entire response body from Qwen
-	fullResponseBody, readBodyErr := io.ReadAll(resp.Body)
-	if readBodyErr != nil {
-		// Check if the error was due to context cancellation (client disconnect)
-		if ctx.Err() == context.Canceled {
-			log.Printf("Client disconnected during response reading: %s %s", r.Method, r.URL.Path)
-			return
-		}
-		http.Error(w, fmt.Sprintf("Failed to read upstream response body: %v", readBodyErr), http.StatusInternalServerError)
-		return
-	}
-
-	// Parse response for debug logging, omitting message field
-	var debugResponseBody map[string]interface{}
-	if err := json.Unmarshal(fullResponseBody, &debugResponseBody); err == nil {
-		// Remove message field if it exists
-		if choices, ok := debugResponseBody["choices"].([]interface{}); ok {
-			for _, choice := range choices {
-				if choiceMap, ok := choice.(map[string]interface{}); ok {
-					if message, ok := choiceMap["message"].(map[string]interface{}); ok {
-						// Create a copy of message without content
-						sanitizedMessage := make(map[string]interface{})
-						for k, v := range message {
-							if k != "content" {
-								sanitizedMessage[k] = v
-							} else {
-								sanitizedMessage[k] = "[CONTENT OMITTED]"
-							}
-						}
-						choiceMap["message"] = sanitizedMessage
-					}
-				}
-			}
-		}
-
-		// Convert back to JSON for logging
-		if sanitizedBody, err := json.Marshal(debugResponseBody); err == nil {
-			log.Printf("DEBUG_UPSTREAM_RAW_RESPONSE: %s", string(sanitizedBody))
-		} else {
-			// Fallback to original if marshaling fails
-			log.Printf("DEBUG_UPSTREAM_RAW_RESPONSE: %s", string(fullResponseBody))
-		}
-	} else {
-		// Fallback to original if parsing fails
-		log.Printf("DEBUG_UPSTREAM_RAW_RESPONSE: %s", string(fullResponseBody))
-	}
-
-	var qwenResponse map[string]interface{}
-	if err := json.Unmarshal(fullResponseBody, &qwenResponse); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to unmarshal Qwen response: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Set necessary headers for SSE to the client
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Cache-Control")
-	w.WriteHeader(resp.StatusCode) // Use upstream status code
-
-	// Extract content and mimic streaming
-	totalContent := ""
-	if choices, ok := qwenResponse["choices"].([]interface{}); ok && len(choices) > 0 {
-		if choice, ok := choices[0].(map[string]interface{}); ok {
-			if message, ok := choice["message"].(map[string]interface{}); ok {
-				if content, ok := message["content"].(string); ok {
-					totalContent = content
-				}
-			}
-		}
-	}
-
-	// Send entire content in one chunk
-	chunk := map[string]interface{}{
-		"choices": []map[string]interface{}{
-			{
-				"delta": map[string]interface{}{
-					"content": totalContent,
-				},
-				"index": 0,
-			},
-		},
-		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
-		"model":   qwenResponse["model"],
-		"id":      qwenResponse["id"],
-	}
-
-	jsonChunk, marshalErr := json.Marshal(chunk)
-	if marshalErr != nil {
-		log.Printf("Error marshaling mimicked chunk: %v", marshalErr)
-		return // Can't recover from this, so return
-	}
-
-	fmt.Fprintf(w, "data: %s\n\n", jsonChunk)
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-
-	// Send [DONE] message
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-
-	modelName := "unknown" // Can get from qwenResponse["model"] if available
-	if m, ok := qwenResponse["model"].(string); ok {
-		modelName = m
-	}
-	requestID := "unknown"
-	if id, ok := qwenResponse["id"].(string); ok {
-		requestID = id
-	}
-
-	log.Printf("Streaming response completed. Path: %s, Model: %s, Duration: %s, RequestID: %s",
-		r.URL.Path, modelName, time.Since(startTime).String(), requestID)
+	// If client is streaming, call the streaming proxy handler
+	StreamProxyHandler(w, r, accessToken, targetURL, originalBody, time.Now()) // Pass current time for startTime
 }
 
 // modelsHandler handles requests to /v1/models and serves the models.json file
@@ -460,7 +144,6 @@ func main() {
 	// Set up the HTTP handler for /v1/models
 	http.HandleFunc("/v1/models", modelsHandler)
 
-
 	// Set up the general proxy handler for all other routes
 	http.HandleFunc("/", proxyHandler)
 
@@ -481,7 +164,7 @@ func main() {
 				}
 			}
 
-			authErr := authenticateWithOAuth()
+			authErr := AuthenticateWithOAuth()
 			if authErr != nil {
 				log.Fatalf("Authentication failed during startup: %v", authErr)
 			}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes" // Added bytes import
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -17,6 +18,15 @@ import (
 	"strings"
 	"time"
 )
+
+// OAuthCreds represents the structure of the qwenproxy_creds.json file
+type OAuthCreds struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	RefreshToken string `json:"refresh_token"`
+	ResourceURL  string `json:"resource_url"`
+	ExpiryDate   int64  `json:"expiry_date"`
+}
 
 // OAuth constants
 const (
@@ -47,6 +57,104 @@ type DeviceAuthResponse struct {
 	VerificationURI         string `json:"verification_uri"`
 	VerificationURIComplete string `json:"verification_uri_complete"`
 	ExpiresIn               int64  `json:"expires_in"`
+}
+
+// getQwenCredentialsPath returns the path to the Qwen credentials file
+func getQwenCredentialsPath() string {
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".qwen", "qwenproxy_creds.json")
+}
+
+// loadQwenCredentials loads the Qwen credentials from the qwenproxy_creds.json file
+func loadQwenCredentials() (OAuthCreds, error) {
+	credsPath := getQwenCredentialsPath()
+	file, err := os.Open(credsPath)
+	if err != nil {
+		return OAuthCreds{}, fmt.Errorf("failed to open credentials file: %v", err)
+	}
+	defer file.Close()
+
+	var creds OAuthCreds
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&creds); err != nil {
+		return OAuthCreds{}, fmt.Errorf("failed to decode credentials file: %v", err)
+	}
+
+	return creds, nil
+}
+
+// isTokenValid checks if the token is still valid
+func isTokenValid(credentials OAuthCreds) bool {
+	if credentials.ExpiryDate == 0 {
+		return false
+	}
+	// Add 30 second buffer. TokenRefreshBufferMs is defined in main.go
+	return time.Now().UnixMilli() < credentials.ExpiryDate-TokenRefreshBufferMs
+}
+
+// refreshAccessToken refreshes the OAuth token using the refresh token
+func refreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
+	if credentials.RefreshToken == "" {
+		return OAuthCreds{}, fmt.Errorf("no refresh token available")
+	}
+
+	// QwenOAuthTokenEndpoint and QwenOAuthClientID are defined in oauth.go constants
+	bodyData := map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": credentials.RefreshToken,
+		"client_id":     QwenOAuthClientID,
+	}
+
+	resp, err := http.Post(QwenOAuthTokenURL, "application/x-www-form-urlencoded",
+		bytes.NewBufferString(fmt.Sprintf("grant_type=%s&refresh_token=%s&client_id=%s",
+			bodyData["grant_type"], bodyData["refresh_token"], bodyData["client_id"])))
+	if err != nil {
+		return OAuthCreds{}, fmt.Errorf("token refresh request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == 400 {
+			return OAuthCreds{}, fmt.Errorf("refresh token expired or invalid. Please re-authenticate with Qwen CLI using '/auth'. Response: %s", string(body))
+		}
+		return OAuthCreds{}, fmt.Errorf("token refresh failed: %d %s. Response: %s", resp.StatusCode, resp.Status, string(body))
+	}
+
+	var tokenData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenData); err != nil {
+		return OAuthCreds{}, fmt.Errorf("failed to decode token response: %v", err)
+	}
+
+	if errorMsg, ok := tokenData["error"]; ok {
+		return OAuthCreds{}, fmt.Errorf("token refresh failed: %v - %v", errorMsg, tokenData["error_description"])
+	}
+
+	// Update credentials with new token
+	expiresIn, _ := tokenData["expires_in"].(float64)
+	updatedCredentials := OAuthCreds{
+		AccessToken:  tokenData["access_token"].(string),
+		TokenType:    tokenData["token_type"].(string),
+		RefreshToken: tokenData["refresh_token"].(string),
+		ResourceURL:  tokenData["resource_url"].(string),
+		ExpiryDate:   time.Now().UnixMilli() + int64(expiresIn*1000),
+	}
+
+	// Save updated credentials
+	credsPath := getQwenCredentialsPath()
+	file, err := os.Create(credsPath)
+	if err != nil {
+		return OAuthCreds{}, fmt.Errorf("failed to save updated credentials: %v", err)
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(updatedCredentials); err != nil {
+		return OAuthCreds{}, fmt.Errorf("failed to encode updated credentials: %v", err)
+	}
+
+	return updatedCredentials, nil
 }
 
 // generateCodeVerifier generates a random code verifier for PKCE
@@ -181,7 +289,7 @@ func exchangeDeviceCodeForToken(deviceCode, codeVerifier string) (*OAuthTokenRes
 }
 
 // saveCredentials saves the OAuth credentials to the qwenproxy_creds.json file
-func saveCredentials(tokenResponse *OAuthTokenResponse) error {
+func SaveCredentials(tokenResponse *OAuthTokenResponse) error {
 	// Get the path to the credentials file
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -222,7 +330,7 @@ func saveCredentials(tokenResponse *OAuthTokenResponse) error {
 }
 
 // pollForToken polls the token endpoint with the device code until successful or timeout
-func pollForToken(deviceCode, codeVerifier string) (*OAuthTokenResponse, error) {
+func PollForToken(deviceCode, codeVerifier string) (*OAuthTokenResponse, error) {
 	// Polling interval in seconds
 	pollInterval := 5 * time.Second
 
@@ -263,8 +371,8 @@ func pollForToken(deviceCode, codeVerifier string) (*OAuthTokenResponse, error) 
 	return nil, fmt.Errorf("timeout waiting for device authorization")
 }
 
-// authenticateWithOAuth performs the complete OAuth device authorization flow
-func authenticateWithOAuth() error {
+// AuthenticateWithOAuth performs the complete OAuth device authorization flow
+func AuthenticateWithOAuth() error {
 	// Generate PKCE parameters once at the beginning
 	pkceParams, err := generatePKCEParams()
 	if err != nil {
@@ -301,13 +409,13 @@ func authenticateWithOAuth() error {
 	}
 
 	// Poll for the token
-	tokenResponse, err := pollForToken(deviceAuthResponse.DeviceCode, pkceParams.CodeVerifier)
+	tokenResponse, err := PollForToken(deviceAuthResponse.DeviceCode, pkceParams.CodeVerifier)
 	if err != nil {
 		return fmt.Errorf("failed to poll for token: %v", err)
 	}
 
 	// Save the credentials
-	if err := saveCredentials(tokenResponse); err != nil {
+	if err := SaveCredentials(tokenResponse); err != nil {
 		return fmt.Errorf("failed to save credentials: %v", err)
 	}
 
