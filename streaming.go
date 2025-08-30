@@ -2,10 +2,10 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"bytes" // Added for non-streaming requests
 	"io"
 	"log"
 	"net/http"
@@ -31,23 +31,105 @@ type Delta struct {
 }
 
 type Usage struct {
-	InputTokens         int            `json:"input_tokens,omitempty"`
-	InputTokensDetails  *TokensDetails `json:"input_tokens_details,omitempty"`
-	OutputTokens        int            `json:"output_tokens,omitempty"`
-	OutputTokensDetails *TokensDetails `json:"output_tokens_details,omitempty"`
+	PromptTokens        int            `json:"prompt_tokens,omitempty"`
+	CompletionTokens    int            `json:"completion_tokens,omitempty"`
 	TotalTokens         int            `json:"total_tokens,omitempty"`
+	PromptTokensDetails *TokensDetails `json:"prompt_tokens_details,omitempty"`
+	// Note: The upstream API doesn't seem to send completion_tokens_details
+	// but we'll keep this field in case it's added in the future
+	CompletionTokensDetails *TokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
 type TokensDetails struct {
-	CachedTokens    int `json:"cached_tokens,omitempty"`
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	CacheType       string `json:"cache_type,omitempty"`
+	CachedTokens    int    `json:"cached_tokens,omitempty"`
+	ReasoningTokens int    `json:"reasoning_tokens,omitempty"`
 }
 
-func duplicate(a, b string) bool {
+// hasPrefixRelationship checks if one string is a prefix of the other.
+// This is used in stuttering detection logic to determine if two content strings
+// have a prefix relationship, which helps identify duplicated or overlapping content
+// in streaming responses.
+func hasPrefixRelationship(a, b string) bool {
 	if len(a) < len(b) {
 		return strings.HasPrefix(b, a)
 	}
 	return strings.HasPrefix(a, b)
+}
+
+// handleDoneMessage handles the [DONE] message in the streaming response
+func handleDoneMessage(w http.ResponseWriter, modelName string, rawUsage *Usage, inputTokens, outputTokens int, startTime time.Time) {
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	// Log the final information when the stream ends
+	duration := time.Since(startTime).Milliseconds()
+	if rawUsage != nil {
+		usageBytes, _ := json.Marshal(rawUsage)
+		log.Printf("[DONE] - Model: %s, Raw Usage: %s, Duration: %s ms",
+			modelName, string(usageBytes), formatIntWithCommas(duration))
+	} else {
+		log.Printf("[DONE] - Model: %s, Input Tokens: %s, Output Tokens: %s, Duration: %s ms",
+			modelName, formatIntWithCommas(int64(inputTokens)), formatIntWithCommas(int64(outputTokens)), formatIntWithCommas(duration))
+	}
+}
+
+// handleUsageData processes usage data from streaming chunks
+func handleUsageData(chunk ChatCompletionChunk, inputTokens, outputTokens *int, rawUsage **Usage) {
+	// Handle special case: final usage chunk with empty choices array
+	if len(chunk.Choices) == 0 && chunk.Usage != nil {
+		// This is a final usage chunk, update our token counts
+		if chunk.Usage.PromptTokens > 0 {
+			*inputTokens = chunk.Usage.PromptTokens
+		}
+		if chunk.Usage.CompletionTokens > 0 {
+			*outputTokens = chunk.Usage.CompletionTokens
+		}
+		// Fallback to TotalTokens if individual token counts are not available
+		if *inputTokens == 0 && *outputTokens == 0 && chunk.Usage.TotalTokens > 0 {
+			// We can't distinguish between input and output tokens, so we'll use TotalTokens as output
+			*outputTokens = chunk.Usage.TotalTokens
+		}
+		// Store the raw usage structure
+		*rawUsage = chunk.Usage
+		return
+	}
+
+	// Track token usage if available (for standard chunks with non-null usage)
+	if chunk.Usage != nil {
+		if chunk.Usage.PromptTokens > 0 {
+			*inputTokens = chunk.Usage.PromptTokens
+		}
+		if chunk.Usage.CompletionTokens > 0 {
+			*outputTokens = chunk.Usage.CompletionTokens
+		}
+		// Fallback to TotalTokens if individual token counts are not available
+		if *inputTokens == 0 && *outputTokens == 0 && chunk.Usage.TotalTokens > 0 {
+			// We can't distinguish between input and output tokens, so we'll use TotalTokens as output
+			*outputTokens = chunk.Usage.TotalTokens
+		}
+		// Store the raw usage structure
+		*rawUsage = chunk.Usage
+	}
+}
+
+// handleStuttering processes the stuttering logic for streaming chunks
+func handleStuttering(stuttering *bool, stutteringBuf *string, newContent *string) bool {
+	if *stuttering {
+		if hasPrefixRelationship(*stutteringBuf, *newContent) {
+			// If it's a duplicate/prefix, buffer it and don't send anything yet
+			*stutteringBuf = *newContent // Update buffer with new (possibly duplicated) content
+			return true                  // Skip sending this chunk
+		} else {
+			// Found genuinely new content, stuttering phase ends
+			*stuttering = false
+			// Prepend the buffered content to the new content
+			*newContent = *stutteringBuf + *newContent
+			*stutteringBuf = "" // Clear buffer
+		}
+	}
+	return false // Don't skip sending this chunk
 }
 
 // StreamProxyHandler handles incoming requests and proxies them to the target endpoint for streaming
@@ -77,20 +159,22 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 	streamOptions["include_usage"] = true
 	originalBody["stream_options"] = streamOptions
 
+	// Marshal the modified body for logging purposes only
 	modifiedBodyBytes, err := json.Marshal(originalBody)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to marshal streaming request body: %v", err), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("[REQUESTING]: %d bytes %s to %s", len(modifiedBodyBytes), r.Method, r.URL.Path)
+	log.Printf("[REQUESTING]: %s bytes %s to %s", formatIntWithCommas(int64(len(modifiedBodyBytes))), r.Method, r.URL.Path)
 
-	// Create a new request to the target endpoint with modified body
-	req, err := http.NewRequestWithContext(ctx, r.Method, targetEndpoint, io.NopCloser(bytes.NewReader(modifiedBodyBytes)))
+	// Create a new request to the target endpoint with the modified request body for streaming
+	req, err := http.NewRequestWithContext(ctx, r.Method, targetEndpoint, bytes.NewBuffer(modifiedBodyBytes))
 	if err != nil {
-		http.Error(w, "Failed to create proxy request with modified body", http.StatusInternalServerError)
+		http.Error(w, "Failed to create proxy request with original body", http.StatusInternalServerError)
 		return
 	}
-	req.ContentLength = int64(len(modifiedBodyBytes))
+	// Set ContentLength to -1 to indicate that we don't know the length (streaming)
+	req.ContentLength = -1
 
 	// Copy headers from original request, but set necessary ones
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -100,16 +184,8 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 	req.Header.Set("X-DashScope-UserAgent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 	req.Header.Set("X-DashScope-AuthType", "qwen-oauth")
 
-	// Configure a custom HTTP client with connection pool optimization and timeout
-	transport := &http.Transport{
-		MaxIdleConns:        MaxIdleConns,                         // Maximum idle connections across all hosts
-		MaxIdleConnsPerHost: MaxIdleConnsPerHost,                  // Maximum idle connections per host
-		IdleConnTimeout:     IdleConnTimeoutSeconds * time.Second, // How long an idle connection is kept alive
-	}
-	client := &http.Client{
-		Timeout:   RequestTimeoutSeconds * time.Second, // Timeout for the entire request, including connection, send, and receive
-		Transport: transport,
-	}
+	// Use the shared HTTP client with connection pool optimization and timeout
+	client := SharedHTTPClient
 
 	// Send the request to the target endpoint
 	resp, err := client.Do(req)
@@ -175,20 +251,7 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 
 				// Handle [DONE] message properly
 				if data == "[DONE]" {
-					fmt.Fprintf(w, "data: [DONE]\n\n")
-					if flusher, ok := w.(http.Flusher); ok {
-						flusher.Flush()
-					}
-					// Log the final information when the stream ends
-					duration := time.Since(startTime).Milliseconds()
-					if rawUsage != nil {
-						usageBytes, _ := json.Marshal(rawUsage)
-						log.Printf("[DONE] - Model: %s, Raw Usage: %s, Duration: %d ms",
-							modelName, string(usageBytes), duration)
-					} else {
-						log.Printf("[DONE] - Model: %s, Input Tokens: %d, Output Tokens: %d, Duration: %d ms",
-							modelName, inputTokens, outputTokens, duration)
-					}
+					handleDoneMessage(w, modelName, rawUsage, inputTokens, outputTokens, startTime)
 					return // Exit on [DONE]
 				}
 
@@ -199,63 +262,25 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 					continue
 				}
 
-				// Handle special case: final usage chunk with empty choices array
+				// Log the raw data for final usage chunks (where choices array is empty)
 				if len(chunk.Choices) == 0 && chunk.Usage != nil {
-					// This is a final usage chunk, update our token counts
-					if chunk.Usage.InputTokens > 0 {
-						inputTokens = chunk.Usage.InputTokens
-					}
-					if chunk.Usage.OutputTokens > 0 {
-						outputTokens = chunk.Usage.OutputTokens
-					}
-					// Fallback to TotalTokens if individual token counts are not available
-					if inputTokens == 0 && outputTokens == 0 && chunk.Usage.TotalTokens > 0 {
-						// We can't distinguish between input and output tokens, so we'll use TotalTokens as output
-						outputTokens = chunk.Usage.TotalTokens
-					}
-					// Store the raw usage structure
-					rawUsage = chunk.Usage
-					// Continue to the next chunk without sending this one to the client
-					continue
+					log.Printf("DEBUG_UPSTREAM_FINAL_USAGE_RAW: %s", data)
 				}
+				
+				// Handle usage data
+				handleUsageData(chunk, &inputTokens, &outputTokens, &rawUsage)
 
 				// Update model name if available in the chunk
 				if chunk.Model != "" {
 					modelName = chunk.Model
 				}
 
-				// Track token usage if available (for standard chunks with non-null usage)
-				if chunk.Usage != nil {
-					if chunk.Usage.InputTokens > 0 {
-						inputTokens = chunk.Usage.InputTokens
-					}
-					if chunk.Usage.OutputTokens > 0 {
-						outputTokens = chunk.Usage.OutputTokens
-					}
-					// Fallback to TotalTokens if individual token counts are not available
-					if inputTokens == 0 && outputTokens == 0 && chunk.Usage.TotalTokens > 0 {
-						// We can't distinguish between input and output tokens, so we'll use TotalTokens as output
-						outputTokens = chunk.Usage.TotalTokens
-					}
-					// Store the raw usage structure
-					rawUsage = chunk.Usage
-				}
-
 				if len(chunk.Choices) > 0 {
 					newContent := chunk.Choices[0].Delta.Content
 
-					if stuttering {
-						if duplicate(stutteringBuf, newContent) {
-							// If it's a duplicate/prefix, buffer it and don't send anything yet
-							stutteringBuf = newContent // Update buffer with new (possibly duplicated) content
-							continue                   // Don't send this chunk to client yet
-						} else {
-							// Found genuinely new content, stuttering phase ends
-							stuttering = false
-							// Prepend the buffered content to the new content
-							newContent = stutteringBuf + newContent
-							stutteringBuf = "" // Clear buffer
-						}
+					// Handle stuttering logic
+					if handleStuttering(&stuttering, &stutteringBuf, &newContent) {
+						continue // Skip sending this chunk
 					}
 
 					// If not stuttering phase, or if stuttering just ended, send the chunk
@@ -283,16 +308,8 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 			readTimeout.Reset(time.Duration(ReadTimeoutSeconds) * time.Second)
 		case err := <-errChan:
 			if err == io.EOF {
-				// Log the final information when the stream ends
-				duration := time.Since(startTime).Milliseconds()
-				if rawUsage != nil {
-					usageBytes, _ := json.Marshal(rawUsage)
-					log.Printf("[DONE] - Model: %s, Raw Usage: %s, Duration: %d ms",
-						modelName, string(usageBytes), duration)
-				} else {
-					log.Printf("[DONE] - Model: %s, Input Tokens: %d, Output Tokens: %d, Duration: %d ms",
-						modelName, inputTokens, outputTokens, duration)
-				}
+				// Use our helper function to handle the DONE message
+				handleDoneMessage(w, modelName, rawUsage, inputTokens, outputTokens, startTime)
 				log.Println("Upstream stream ended.")
 			} else {
 				log.Printf("Error reading stream from upstream: %v", err)

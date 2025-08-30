@@ -132,9 +132,14 @@ func refreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
 		"client_id":     QwenOAuthClientID,
 	}
 
-	resp, err := http.Post(QwenOAuthTokenURL, "application/x-www-form-urlencoded",
-		bytes.NewBufferString(fmt.Sprintf("grant_type=%s&refresh_token=%s&client_id=%s",
-			bodyData["grant_type"], bodyData["refresh_token"], bodyData["client_id"])))
+	req, err := http.NewRequest("POST", QwenOAuthTokenURL, bytes.NewBufferString(fmt.Sprintf("grant_type=%s&refresh_token=%s&client_id=%s",
+		bodyData["grant_type"], bodyData["refresh_token"], bodyData["client_id"])))
+	if err != nil {
+		return OAuthCreds{}, fmt.Errorf("failed to create token refresh request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := SharedHTTPClient.Do(req)
 	if err != nil {
 		return OAuthCreds{}, fmt.Errorf("token refresh request failed: %v", err)
 	}
@@ -232,8 +237,7 @@ func initiateDeviceAuth(pkceParams *PKCEParams) (*DeviceAuthResponse, error) {
 	req.Header.Set("Accept", "application/json")
 
 	// Send the request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := SharedHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send device auth request: %v", err)
 	}
@@ -279,8 +283,7 @@ func exchangeDeviceCodeForToken(deviceCode, codeVerifier string) (*OAuthTokenRes
 	req.Header.Set("Accept", "application/json")
 
 	// Send the request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := SharedHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send device token exchange request: %v", err)
 	}
