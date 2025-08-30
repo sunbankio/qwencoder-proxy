@@ -1,4 +1,4 @@
-package main
+package auth
 
 import (
 	"net/http"
@@ -16,6 +16,9 @@ const (
 	RequestTimeoutSeconds   = 300         // Request timeout
 	StreamingTimeoutSeconds = 300         // Streaming timeout
 	ReadTimeoutSeconds      = 45          // Read timeout
+	QwenOAuthTokenURL       = "https://chat.qwen.ai/api/v1/oauth2/token"
+	QwenOAuthClientID       = "f0304373b74a44d2b584a3fb70ca9e56"
+	QwenOAuthScope          = "openid profile email model.completion"
 )
 
 // Shared HTTP client with connection pooling and timeouts

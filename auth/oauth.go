@@ -1,14 +1,13 @@
-package main
+package auth
 
 import (
-	"bytes" // Added bytes import
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"qwenproxy/logging"
 )
 
 // OAuthCreds represents the structure of the qwenproxy_creds.json file
@@ -27,13 +28,6 @@ type OAuthCreds struct {
 	ResourceURL  string `json:"resource_url"`
 	ExpiryDate   int64  `json:"expiry_date"`
 }
-
-// OAuth constants
-const (
-	QwenOAuthTokenURL = "https://chat.qwen.ai/api/v1/oauth2/token"
-	QwenOAuthClientID = "f0304373b74a44d2b584a3fb70ca9e56"
-	QwenOAuthScope    = "openid profile email model.completion"
-)
 
 // PKCEParams holds the parameters for PKCE
 type PKCEParams struct {
@@ -59,9 +53,9 @@ type DeviceAuthResponse struct {
 	ExpiresIn               int64  `json:"expires_in"`
 }
 
-// saveOAuthCreds saves OAuth credentials to the qwenproxy_creds.json file
-func saveOAuthCreds(creds OAuthCreds) error {
-	credsPath := getQwenCredentialsPath()
+// SaveOAuthCreds saves OAuth credentials to the qwenproxy_creds.json file
+func SaveOAuthCreds(creds OAuthCreds) error {
+	credsPath := GetQwenCredentialsPath()
 	
 	// Create the directory if it doesn't exist
 	dir := filepath.Dir(credsPath)
@@ -86,15 +80,15 @@ func saveOAuthCreds(creds OAuthCreds) error {
 	return nil
 }
 
-// getQwenCredentialsPath returns the path to the Qwen credentials file
-func getQwenCredentialsPath() string {
+// GetQwenCredentialsPath returns the path to the Qwen credentials file
+func GetQwenCredentialsPath() string {
 	homeDir, _ := os.UserHomeDir()
 	return filepath.Join(homeDir, ".qwen", "qwenproxy_creds.json")
 }
 
-// loadQwenCredentials loads the Qwen credentials from the qwenproxy_creds.json file
-func loadQwenCredentials() (OAuthCreds, error) {
-	credsPath := getQwenCredentialsPath()
+// LoadQwenCredentials loads the Qwen credentials from the qwenproxy_creds.json file
+func LoadQwenCredentials() (OAuthCreds, error) {
+	credsPath := GetQwenCredentialsPath()
 	file, err := os.Open(credsPath)
 	if err != nil {
 		return OAuthCreds{}, fmt.Errorf("failed to open credentials file: %v", err)
@@ -110,22 +104,22 @@ func loadQwenCredentials() (OAuthCreds, error) {
 	return creds, nil
 }
 
-// isTokenValid checks if the token is still valid
-func isTokenValid(credentials OAuthCreds) bool {
+// IsTokenValid checks if the token is still valid
+func IsTokenValid(credentials OAuthCreds) bool {
 	if credentials.ExpiryDate == 0 {
 		return false
 	}
-	// Add 30 second buffer. TokenRefreshBufferMs is defined in main.go
+	// Add 30 second buffer. TokenRefreshBufferMs is defined in constants.go
 	return time.Now().UnixMilli() < credentials.ExpiryDate-TokenRefreshBufferMs
 }
 
-// refreshAccessToken refreshes the OAuth token using the refresh token
-func refreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
+// RefreshAccessToken refreshes the OAuth token using the refresh token
+func RefreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
 	if credentials.RefreshToken == "" {
 		return OAuthCreds{}, fmt.Errorf("no refresh token available")
 	}
 
-	// QwenOAuthTokenEndpoint and QwenOAuthClientID are defined in oauth.go constants
+	// QwenOAuthTokenEndpoint and QwenOAuthClientID are defined in constants.go
 	bodyData := map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": credentials.RefreshToken,
@@ -173,7 +167,7 @@ func refreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
 	}
 
 	// Save updated credentials using the shared function
-	if err := saveOAuthCreds(updatedCredentials); err != nil {
+	if err := SaveOAuthCreds(updatedCredentials); err != nil {
 		return OAuthCreds{}, fmt.Errorf("failed to save updated credentials: %v", err)
 	}
 
@@ -310,7 +304,7 @@ func exchangeDeviceCodeForToken(deviceCode, codeVerifier string) (*OAuthTokenRes
 }
 
 // saveCredentials saves the OAuth credentials to the qwenproxy_creds.json file
-func SaveCredentials(tokenResponse *OAuthTokenResponse) error {
+func saveCredentials(tokenResponse *OAuthTokenResponse) error {
 	// Create the credentials structure
 	creds := OAuthCreds{
 		AccessToken:  tokenResponse.AccessToken,
@@ -321,10 +315,10 @@ func SaveCredentials(tokenResponse *OAuthTokenResponse) error {
 	}
 
 	// Save credentials using the shared function
-	return saveOAuthCreds(creds)
+	return SaveOAuthCreds(creds)
 }
 
-// pollForToken polls the token endpoint with the device code until successful or timeout
+// PollForToken polls the token endpoint with the device code until successful or timeout
 func PollForToken(deviceCode, codeVerifier string) (*OAuthTokenResponse, error) {
 	// Polling interval in seconds
 	pollInterval := 5 * time.Second
@@ -399,7 +393,7 @@ func AuthenticateWithOAuth() error {
 
 	// Try to open the verification URI in the browser
 	if err := openBrowser(verificationURL); err != nil {
-		log.Printf("Failed to open browser automatically: %v", err)
+		logging.NewLogger().WarningLog("Failed to open browser automatically: %v", err)
 		fmt.Println("Please manually open the Verification URI in your browser.")
 	}
 
@@ -410,7 +404,7 @@ func AuthenticateWithOAuth() error {
 	}
 
 	// Save the credentials
-	if err := SaveCredentials(tokenResponse); err != nil {
+	if err := saveCredentials(tokenResponse); err != nil {
 		return fmt.Errorf("failed to save credentials: %v", err)
 	}
 
