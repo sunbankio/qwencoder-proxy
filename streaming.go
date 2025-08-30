@@ -2,10 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes" // Added for non-streaming requests
 	"context"
 	"encoding/json"
 	"fmt"
-	"bytes" // Added for non-streaming requests
 	"io"
 	"log"
 	"net/http"
@@ -67,10 +67,10 @@ func handleDoneMessage(w http.ResponseWriter, modelName string, rawUsage *Usage,
 	duration := time.Since(startTime).Milliseconds()
 	if rawUsage != nil {
 		usageBytes, _ := json.Marshal(rawUsage)
-		log.Printf("[DONE] - Model: %s, Raw Usage: %s, Duration: %s ms",
+		log.Printf("[DONE] - Model: %s, Raw Usage: %s, Duration: %s ms\n====================================",
 			modelName, string(usageBytes), formatIntWithCommas(duration))
 	} else {
-		log.Printf("[DONE] - Model: %s, Input Tokens: %s, Output Tokens: %s, Duration: %s ms",
+		log.Printf("[DONE] - Model: %s, Input Tokens: %s, Output Tokens: %s, Duration: %s ms\n====================================",
 			modelName, formatIntWithCommas(int64(inputTokens)), formatIntWithCommas(int64(outputTokens)), formatIntWithCommas(duration))
 	}
 }
@@ -263,10 +263,10 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 				}
 
 				// Log the raw data for final usage chunks (where choices array is empty)
-				if len(chunk.Choices) == 0 && chunk.Usage != nil {
-					log.Printf("DEBUG_UPSTREAM_FINAL_USAGE_RAW: %s", data)
-				}
-				
+				// if len(chunk.Choices) == 0 && chunk.Usage != nil {
+				// 	log.Printf("DEBUG_UPSTREAM_FINAL_USAGE_RAW: %s", data)
+				// }
+
 				// Handle usage data
 				handleUsageData(chunk, &inputTokens, &outputTokens, &rawUsage)
 
