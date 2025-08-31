@@ -27,6 +27,7 @@ const (
 	DoneTag          = "■ [ST]"
 	DoneNonStreamTag = "■ [NS]"
 	Separator        = "===================================="
+	DebugTag         = "🐛 [DBG]" // New debug tag
 )
 
 // Logger wraps the standard logger with color support
@@ -80,4 +81,20 @@ func (l *Logger) ErrorLog(format string, v ...interface{}) {
 func (l *Logger) WarningLog(format string, v ...interface{}) {
 	message := fmt.Sprintf(format, v...)
 	l.Printf("%s⚠️  [WARN] %s%s", Yellow, Reset, message)
+}
+
+// DebugLog logs debug messages with magenta color if debug mode is enabled
+func (l *Logger) DebugLog(format string, v ...interface{}) {
+	if IsDebugMode {
+		message := fmt.Sprintf(format, v...)
+		l.Printf("%s%s%s %s", Magenta, DebugTag, Reset, message)
+	}
+}
+
+// DebugRawLog logs raw debug messages without extra formatting if debug mode is enabled
+func (l *Logger) DebugRawLog(format string, v ...interface{}) {
+	if IsDebugMode {
+		message := fmt.Sprintf(format, v...)
+		l.Printf("%s%s", Dim, message)
+	}
 }

@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"bytes"
 
 	"qwenproxy/logging"
 	"qwenproxy/qwenclient"
@@ -49,6 +49,14 @@ func NonStreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, 
 
 	// Log the non-streaming request details with comma-formatted bytes
 	logging.NewLogger().NonStreamLog("%s bytes %s to %s", utils.FormatIntWithCommas(int64(len(modifiedBodyBytes))), r.Method, r.URL.Path)
+
+	// Debug: Log the raw request to upstream
+	logging.NewLogger().DebugLog("Upstream Request: %s %s", r.Method, targetEndpoint)
+	logging.NewLogger().DebugRawLog("Upstream Request Body: %s", string(modifiedBodyBytes))
+
+	// Debug: Log the upstream request details
+	logging.NewLogger().DebugLog("Upstream Request: %s %s", r.Method, targetEndpoint)
+	logging.NewLogger().DebugRawLog("Upstream Request Body: %s", string(modifiedBodyBytes))
 
 	// Create a new request to the target endpoint
 	req, err := http.NewRequest(r.Method, targetEndpoint, bytes.NewBuffer(modifiedBodyBytes))
@@ -99,6 +107,10 @@ func NonStreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, 
 		logging.NewLogger().ErrorLog("Failed to copy response body: %v", err)
 	}
 
+	// Debug: Log the raw response from upstream
+	logging.NewLogger().DebugLog("Upstream Response: %d %s", resp.StatusCode, resp.Status)
+	logging.NewLogger().DebugRawLog("Upstream Response Body: %s", buf.String())
+
 	// Calculate the duration
 	duration := time.Since(startTime).Milliseconds()
 
@@ -118,6 +130,19 @@ func NonStreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, 
 
 // ProxyHandler handles incoming requests and proxies them to the target endpoint
 func ProxyHandler(w http.ResponseWriter, r *http.Request) {
+	// Debug: Log the incoming client request
+	logging.NewLogger().DebugLog("Incoming Client Request: %s %s", r.Method, r.URL.String())
+	if r.Body != nil {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			logging.NewLogger().ErrorLog("Failed to read client request body: %v", err)
+			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
+			return
+		}
+		logging.NewLogger().DebugRawLog("Client Request Body: %s", string(bodyBytes))
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore the body for further processing
+	}
+
 	// Get valid token and endpoint
 	accessToken, targetEndpoint, err := qwenclient.GetValidTokenAndEndpoint()
 	if err != nil {

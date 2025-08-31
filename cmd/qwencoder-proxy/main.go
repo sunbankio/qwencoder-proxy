@@ -2,17 +2,27 @@ package main
 
 import (
 	"fmt"
+	"flag"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 
 	"qwenproxy/auth"
+	"qwenproxy/logging"
 	"qwenproxy/proxy"
 	"qwenproxy/qwenclient"
 )
 
 func main() {
+	// Define the debug flag
+	var debugFlag bool
+	flag.BoolVar(&debugFlag, "debug", false, "Enable debug mode for verbose logging")
+	flag.Parse()
+
+	// Set the global debug mode variable
+	logging.IsDebugMode = debugFlag
+
 	// Set up the HTTP handler for /v1/models
 	http.HandleFunc("/v1/models", proxy.ModelsHandler)
 
@@ -49,7 +59,11 @@ func main() {
 	}
 
 	// Start the server
-	fmt.Printf("Proxy server starting on port %s\n", auth.Port)
+	debugStatus := ""
+	if logging.IsDebugMode {
+		debugStatus = " [DEBUG ON]"
+	}
+	fmt.Printf("Proxy server starting on port %s%s\n", auth.Port, debugStatus)
 	if err := http.ListenAndServe(":"+auth.Port, nil); err != nil {
 		log.Fatal("Server failed to start: ", err)
 	}

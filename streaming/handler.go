@@ -51,6 +51,10 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 	}
 	logging.NewLogger().StreamLog("%s bytes %s to %s", utils.FormatIntWithCommas(int64(len(modifiedBodyBytes))), r.Method, r.URL.Path)
 
+	// Debug: Log the upstream request details
+	logging.NewLogger().DebugLog("Upstream Request (Streaming): %s %s", r.Method, targetEndpoint)
+	logging.NewLogger().DebugRawLog("Upstream Request Body (Streaming): %s", string(modifiedBodyBytes))
+
 	// Create a new request to the target endpoint with the modified request body for streaming
 	req, err := http.NewRequestWithContext(ctx, r.Method, targetEndpoint, bytes.NewBuffer(modifiedBodyBytes))
 	if err != nil {
@@ -91,8 +95,7 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 	w.WriteHeader(resp.StatusCode) // Use upstream status code
 
 	reader := bufio.NewReader(resp.Body)
-	stuttering := true  // Flag to indicate if we are in stuttering phase
-	stutteringBuf := "" // To accumulate content during stuttering phase
+	stutteringProcessor := NewStutteringHandler() // Initialize the stuttering handler
 
 	// Use a channel to communicate lines from the upstream reader
 	lineChan := make(chan string)
@@ -140,6 +143,9 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 			}
 			readTimeout.Reset(time.Duration(ReadTimeoutSeconds) * time.Second)
 
+			// Debug: Log the raw line received from upstream
+			logging.NewLogger().DebugRawLog("Upstream Response Line (Streaming): %s", line)
+
 			// Process the line from the upstream response
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
@@ -151,63 +157,60 @@ func StreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, tar
 					return // Exit the handler
 				}
 
-				// Try to unmarshal the data into a ChatCompletionChunk
+				// Process the line through the stuttering handler
+				processedOutput, err := stutteringProcessor(data)
+				if err != nil {
+					logging.NewLogger().ErrorLog("Stuttering processor error: %v, data: %s", err, data)
+					// If there's an error in the stuttering processor, still try to pass the original line through
+					fmt.Fprintf(w, "data: %s\n\n", data) // Ensure data: prefix for consistency
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+					continue
+				}
+
+				if processedOutput == "" {
+					// Stuttering handler has buffered this chunk, do nothing
+					continue
+				}
+				
+				// Try to unmarshal the data into a ChatCompletionChunk for usage tracking
 				var chunk ChatCompletionChunk
 				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-					logging.NewLogger().ErrorLog("Failed to unmarshal chunk: %v, data: %s", err, data)
-					continue // Skip this chunk and continue with the next one
+					// This should ideally not happen if stutteringProcessor didn't error,
+					// but handle gracefully if the chunk is malformed for usage parsing.
+					logging.NewLogger().ErrorLog("Failed to unmarshal chunk for usage tracking: %v, data: %s", err, data)
+				} else {
+					// Handle special case: final usage chunk with empty choices array
+					// Also handle standard chunks with usage information
+					HandleUsageData(chunk, &inputTokens, &outputTokens, &rawUsage)
 				}
 
-				// Handle special case: final usage chunk with empty choices array
-				// Also handle standard chunks with usage information
-				HandleUsageData(chunk, &inputTokens, &outputTokens, &rawUsage)
-
-				// Process the content of the chunk
-				if len(chunk.Choices) > 0 {
-					newContent := chunk.Choices[0].Delta.Content
-					// Check if we are in stuttering phase and handle it
-					if HandleStuttering(&stuttering, &stutteringBuf, &newContent) {
-						continue // Skip sending this chunk
-					}
-					// If newContent is not empty, send it to the client as a properly formatted JSON object
-					if newContent != "" {
-						// Create a ChatCompletionChunk object with the new content and model name
-						responseChunk := ChatCompletionChunk{
-							Choices: []Choice{
-								{
-									Delta: Delta{
-										Content: newContent,
-									},
-								},
-							},
-							Model: modelName,
-						}
-						// Marshal the response chunk to JSON
-						responseBytes, err := json.Marshal(responseChunk)
-						if err != nil {
-							logging.NewLogger().ErrorLog("Failed to marshal response chunk: %v", err)
-							continue // Skip this chunk and continue with the next one
-						}
-						// Send the JSON object with the data: prefix
-						fmt.Fprintf(w, "data: %s\n\n", responseBytes)
-						if flusher, ok := w.(http.Flusher); ok {
-							flusher.Flush()
-						}
-					}
+				// Send the processed output (flushed buffer + current chunk, or just current chunk)
+				logging.NewLogger().DebugRawLog("Client Response Line (Streaming - Processed): %s", processedOutput)
+				fmt.Fprintf(w, "%s", processedOutput)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
 				}
 			} else if strings.HasPrefix(line, "event: ") {
+				// Debug: Log the raw response sent to client
+				logging.NewLogger().DebugRawLog("Client Response Line (Streaming): %s", line)
 				// Pass through event lines
 				fmt.Fprintf(w, "%s", line)
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
 			} else if strings.HasPrefix(line, ":") {
+				// Debug: Log the raw response sent to client
+				logging.NewLogger().DebugRawLog("Client Response Line (Streaming): %s", line)
 				// Pass through comment lines (lines starting with ':')
 				fmt.Fprintf(w, "%s", line)
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
 			} else if line == "\n" {
+				// Debug: Log the raw response sent to client
+				logging.NewLogger().DebugRawLog("Client Response Line (Streaming): %s", line)
 				// Pass through empty lines
 				fmt.Fprintf(w, "\n")
 				if flusher, ok := w.(http.Flusher); ok {

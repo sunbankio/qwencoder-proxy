@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"qwenproxy/logging"
 	"qwenproxy/streaming"
 )
 
@@ -15,4 +16,5 @@ func init() {
 	SharedHTTPClient = &http.Client{
 		Timeout: streaming.StreamingTimeoutSeconds * time.Second,
 	}
+	logging.NewLogger().DebugLog("Shared HTTP Client initialized with timeout: %v", SharedHTTPClient.Timeout)
 }

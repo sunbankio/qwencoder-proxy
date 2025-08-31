@@ -2,14 +2,19 @@ package streaming
 
 // Define structs to match the OpenAI API response structure for streaming
 type ChatCompletionChunk struct {
+	ID      string   `json:"id,omitempty"`
+	Object  string   `json:"object,omitempty"`
+	Created int64    `json:"created,omitempty"`
+	Model   string   `json:"model,omitempty"`
 	Choices []Choice `json:"choices"`
 	Usage   *Usage   `json:"usage,omitempty"`
-	Model   string   `json:"model,omitempty"`
 }
 
 type Choice struct {
+	Index        int    `json:"index,omitempty"`
 	Delta        Delta  `json:"delta"`
 	FinishReason string `json:"finish_reason,omitempty"`
+	Logprobs     any    `json:"logprobs,omitempty"`
 }
 
 type Delta struct {

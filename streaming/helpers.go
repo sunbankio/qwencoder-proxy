@@ -3,18 +3,15 @@ package streaming
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
 	"qwenproxy/logging"
 	"qwenproxy/utils"
+	"net/http" // Add this import for http.ResponseWriter
 )
 
 // HasPrefixRelationship checks if one string is a prefix of the other.
-// This is used in stuttering detection logic to determine if two content strings
-// have a prefix relationship, which helps identify duplicated or overlapping content
-// in streaming responses.
 func HasPrefixRelationship(a, b string) bool {
 	if len(a) < len(b) {
 		return strings.HasPrefix(b, a)
@@ -78,6 +75,70 @@ func HandleUsageData(chunk ChatCompletionChunk, inputTokens, outputTokens *int, 
 		}
 		// Store the raw usage structure
 		*rawUsage = chunk.Usage
+	}
+}
+
+// StutteringHandler is a function that processes incoming data lines
+// and handles stuttering by buffering and releasing chunks.
+// It returns the data string(s) that should be sent to the client.
+type StutteringHandler func(data string) (string, error)
+
+// NewStutteringHandler creates a new StutteringHandler closure.
+func NewStutteringHandler() StutteringHandler {
+	stuttering := true                 // Flag to indicate if we are in stuttering phase
+	stutteringLastDeltaContent := ""   // Last delta content received during stuttering
+	stutteringChunkBuf := ""           // Buffer for the current stuttering chunk
+	initialSuppressionCount := 0       // Count of content-bearing chunks for initial suppression
+
+	return func(data string) (string, error) {
+		if strings.TrimSpace(data) == "[DONE]" {
+			return "data: [DONE]\n\n", nil
+		}
+
+		var currentChunk ChatCompletionChunk
+		if err := json.Unmarshal([]byte(data), &currentChunk); err != nil {
+			return "", fmt.Errorf("failed to unmarshal current chunk for stuttering: %w", err)
+		}
+
+		currentDeltaContent := ""
+		if len(currentChunk.Choices) > 0 {
+			currentDeltaContent = currentChunk.Choices[0].Delta.Content
+		}
+
+		if stuttering {
+			if currentDeltaContent != "" {
+				initialSuppressionCount++
+			}
+
+			if initialSuppressionCount <= 1 { // Suppress the first content-bearing chunk (Line 1 in streamingtest.txt)
+				stutteringLastDeltaContent = currentDeltaContent
+				stutteringChunkBuf = data
+				return "", nil // Suppress output
+			}
+			// From here onwards, we are past the initial suppression.
+			// The original stuttering logic should apply.
+
+			if HasPrefixRelationship(currentDeltaContent, stutteringLastDeltaContent) {
+				// This is stuttering, update buffer and suppress output
+				stutteringLastDeltaContent = currentDeltaContent
+				stutteringChunkBuf = data // Store the full data string for the chunk
+				return "", nil            // Suppress output
+			} else {
+				// Found genuinely new content, stuttering phase ends
+				stuttering = false
+				// Return the buffered chunk first, then the current new chunk
+				// Ensure that if stutteringChunkBuf is empty (e.g., first chunk was already valid)
+				// we only return the current data.
+				if stutteringChunkBuf != "" {
+					return "data: " + stutteringChunkBuf + "\n\n" + "data: " + data + "\n\n", nil
+				} else {
+					return "data: " + data + "\n\n", nil
+				}
+			}
+		}
+
+		// If not in stuttering phase, pass through directly
+		return "data: " + data + "\n\n", nil
 	}
 }
 
