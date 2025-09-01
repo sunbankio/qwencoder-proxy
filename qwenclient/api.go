@@ -51,7 +51,7 @@ func GetValidTokenAndEndpoint() (string, string, error) {
 		return "", "", fmt.Errorf("no access token found in credentials")
 	}
 
-	// Use resource_url from credentials if available, otherwise fallback to default
+	// Use resource_url from credentials if available, otherwise fallback to default from auth package
 	baseEndpoint := credentials.ResourceURL
 	if baseEndpoint == "" {
 		baseEndpoint = auth.DefaultQwenBaseURL

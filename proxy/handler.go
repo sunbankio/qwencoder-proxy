@@ -8,12 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"qwenproxy/logging"
+	"qwenproxy/qwenclient"
 	"runtime"
 	"strings"
 	"time"
-
-	"qwenproxy/logging"
-	"qwenproxy/qwenclient"
 )
 
 // Model represents the structure of a model
@@ -146,8 +145,14 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Get client IP
 	clientIP := r.RemoteAddr
 
+	// Get user agent
+	userAgent := r.Header.Get("User-Agent")
+	if userAgent == "" {
+		userAgent = "unknown"
+	}
+
 	// Log incoming request details
-	logging.NewLogger().DebugLog("Incoming Request: Method=%s URL=%s Content-Length=%d ClientIP=%s", r.Method, r.URL.Path, r.ContentLength, clientIP)
+	logging.NewLogger().DebugLog("Incoming Request: Method=%s URL=%s Content-Length=%d ClientIP=%s User-Agent=%s", r.Method, r.URL.Path, r.ContentLength, clientIP, userAgent)
 	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
 		clientIP = ip
 	} else if ip := r.Header.Get("X-Real-IP"); ip != "" {
@@ -202,6 +207,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 				clientIP,
 				r.Method,
 				r.URL.Path,
+				userAgent,
 				len(requestBodyBytes),
 				isClientStreaming,
 				0,   // upstream status (0 indicates error)
@@ -219,6 +225,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 			clientIP,
 			r.Method,
 			r.URL.Path,
+			userAgent,
 			len(requestBodyBytes),
 			isClientStreaming,
 			0,   // upstream status (0 indicates error)
@@ -246,6 +253,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		clientIP,
 		r.Method,
 		r.URL.Path,
+		userAgent,
 		len(requestBodyBytes),
 		isClientStreaming,
 		resp.StatusCode,           // upstream status

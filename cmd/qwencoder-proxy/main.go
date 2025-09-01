@@ -9,15 +9,19 @@ import (
 	"strings"
 
 	"qwenproxy/auth"
+	"qwenproxy/config"
 	"qwenproxy/logging"
 	"qwenproxy/proxy"
 	"qwenproxy/qwenclient"
 )
 
 func main() {
+	// Load configuration
+	cfg := config.LoadConfig()
+
 	// Define the debug flag
 	var debugFlag bool
-	flag.BoolVar(&debugFlag, "debug", false, "Enable debug mode for verbose logging")
+	flag.BoolVar(&debugFlag, "debug", cfg.Logging.IsDebugMode, "Enable debug mode for verbose logging")
 	flag.Parse()
 
 	// Set the global debug mode variable
@@ -63,8 +67,8 @@ func main() {
 	if logging.IsDebugMode {
 		debugStatus = " [DEBUG ON]"
 	}
-	fmt.Printf("Proxy server starting on port %s%s\n", auth.Port, debugStatus)
-	if err := http.ListenAndServe(":"+auth.Port, nil); err != nil {
+	fmt.Printf("Proxy server starting on port %s%s\n", cfg.Server.Port, debugStatus)
+	if err := http.ListenAndServe(":"+cfg.Server.Port, nil); err != nil {
 		log.Fatal("Server failed to start: ", err)
 	}
 }
