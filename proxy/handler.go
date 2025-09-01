@@ -93,7 +93,8 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 
 		reader := bufio.NewReader(resp.Body)
-		stutteringProcessor := stutteringProcess()
+		stuttering := true
+		buf := "" // Buffered content for stuttering control
 
 		for {
 			line, err := reader.ReadString('\n')
@@ -110,13 +111,6 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 				data = strings.TrimRight(data, "\n")
 				logging.NewLogger().DebugLog("Extracted data part: %s", data)
 
-				jsonChunk := chunkToJson(data) // Pass the extracted data, not the raw line
-				if jsonChunk == nil {
-					logging.NewLogger().DebugLog("chunkToJson returned nil for data: %s", data)
-					continue // Skip this malformed or uninteresting chunk
-				}
-				logging.NewLogger().DebugLog("chunkToJson output: %v", jsonChunk)
-
 				if data == "[DONE]" {
 					fmt.Fprintf(w, "data: [DONE]\n\n")
 					if flusher, ok := w.(http.Flusher); ok {
@@ -125,16 +119,31 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 
-				processedOutput := stutteringProcessor(data) // Pass the extracted data
-				logging.NewLogger().DebugLog("stutteringProcessor output: %s", strings.TrimSpace(processedOutput))
-
-				if processedOutput != "" {
-					fmt.Fprintf(w, "%s\n", processedOutput)
+				if stuttering {
+					// Process the chunk for stuttering control
+					processedOutput, newStuttering, newBuf, err := stutteringProcess(stuttering, buf, data)
+					if err != nil {
+						logging.NewLogger().ErrorLog("Error in stutteringProcess: %v", err)
+						// If an error occurs, send the original data to prevent blocking
+						fmt.Fprintf(w, "data: %s\n\n", data)
+					} else {
+						stuttering = newStuttering
+						buf = newBuf
+						if processedOutput != "" {
+							fmt.Fprintf(w, "%s", processedOutput)
+							if flusher, ok := w.(http.Flusher); ok {
+								flusher.Flush()
+							}
+						}
+					}
+				} else {
+					// If not stuttering, just forward the data directly
+					fmt.Fprintf(w, "data: %s\n\n", data)
 					if flusher, ok := w.(http.Flusher); ok {
 						flusher.Flush()
 					}
 				}
-			} else if strings.HasPrefix(line, "event: ") || strings.HasPrefix(line, ":") || line == "\n" {
+			} else { // Handle non-data lines (event, :, empty)
 				logging.NewLogger().DebugLog("Non-data line: %s", strings.TrimSpace(line))
 				fmt.Fprintf(w, "%s", line)
 				if flusher, ok := w.(http.Flusher); ok {
@@ -192,31 +201,52 @@ func SetProxyHeaders(req *http.Request, accessToken string) {
 	req.Header.Set("X-DashScope-AuthType", "qwen-oauth")
 }
 
-func stutteringProcess() func(chunk string) string { // Renamed dataChunk back to chunk
-	stuttering := true
-	buf := ""
-	return func(chunk string) string { // Changed dataChunk back to chunk
-		if !stuttering {
-			return "data: " + chunk + "\n\n"
-		}
-		raw := chunkToJson(chunk) // Pass chunk directly, not dataChunk
-		if len(raw) == 0 {
-			return "data: " + chunk + "\n\n"
-		}
-		extracted := extractDeltaContent(raw)
-		if hasPrefixRelationship(extracted, buf) {
-			buf = extracted
-			return ""
-		} else {
-			stuttering = false
+func stutteringProcess(stuttering bool, buf string, currentChunkData string) (string, bool, string, error) {
+	// currentChunkData is the string after "data: " prefix and without trailing newline
 
-			modifiedChunk, err := prependDeltaContent(buf, raw)
-			if err != nil {
-				logging.NewLogger().ErrorLog("Error prepending delta content: %v", err)
-				return ""
-			}
-			return modifiedChunk
-		}
+	if !stuttering {
+		// This branch should ideally not be hit if ProxyHandler manages `stuttering` correctly,
+		// but as a fallback, if stuttering is false, just return the chunk.
+		return "data: " + currentChunkData + "\n\n", stuttering, buf, nil
+	}
+
+	rawCurrentChunk := chunkToJson(currentChunkData)
+	if rawCurrentChunk == nil {
+		// If current chunk is malformed/uninteresting, treat it as a non-stuttering chunk
+		// and forward it, but don't update buffer or change stuttering state based on it.
+		// This also ensures [DONE] messages are passed through.
+		return "data: " + currentChunkData + "\n\n", stuttering, buf, nil
+	}
+	extractedCurrentContent := extractDeltaContent(rawCurrentChunk)
+
+	if buf == "" { // This is the first content chunk
+		buf = currentChunkData
+		return "", stuttering, buf, nil // Suppress the first content chunk
+	}
+
+	// 'buf' now holds the JSON string of the first chunk
+	rawBufferedChunk := chunkToJson(buf)
+	if rawBufferedChunk == nil {
+		// If buffered chunk is malformed, just send current and stop stuttering
+		stuttering = false
+		return "data: " + currentChunkData + "\n\n", stuttering, "", nil
+	}
+	extractedBufferedContent := extractDeltaContent(rawBufferedChunk)
+
+	if hasPrefixRelationship(extractedCurrentContent, extractedBufferedContent) {
+		// Still stuttering, current content is a prefix of buffered content, or vice-versa
+		buf = currentChunkData // Update buffer with the latest, longer content
+		return "", stuttering, buf, nil // Suppress current chunk
+	} else {
+		// Stuttering has ended. Send the original buffered chunk, then the current chunk.
+		stuttering = false
+
+		// The stored `buf` is already the full JSON string of the first chunk.
+		// The `currentChunkData` is the full JSON string of the second chunk.
+
+		// Concatenate "data: " + buffered chunk (original) + "\n\n" + "data: " + current chunk (original) + "\n\n"
+		output := "data: " + buf + "\n\ndata: " + currentChunkData + "\n\n"
+		return output, stuttering, "", nil // Clear buf after sending
 	}
 }
 
@@ -232,16 +262,8 @@ func extractDeltaContent(raw map[string]interface{}) string {
 	return raw["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})["content"].(string)
 }
 
-func prependDeltaContent(buf string, raw map[string]interface{}) (string, error) {
-	prefix := "data: "
-	// it's safe to do this, because raw is validated in chunkToJson
-	raw["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})["content"] = buf + raw["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})["content"].(string)
-
-	modifiedChunkBytes, err := json.Marshal(raw)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal modified chunk: %w", err)
-	}
-	return prefix + string(modifiedChunkBytes) + "\n\n", nil
+func prependDeltaContent(buf string, raw map[string]interface{}) (string, error) { // This function is no longer needed with the new approach
+	return "", nil
 }
 
 func chunkToJson(chunk string) map[string]interface{} {
