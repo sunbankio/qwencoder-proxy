@@ -114,7 +114,7 @@ func checkIfStreaming(requestBodyBytes []byte) bool {
 // ProxyHandler handles incoming requests and proxies them to the target endpoint
 func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	logging.NewLogger().DebugLog("Incoming Request Content-Length: %d", r.ContentLength)
-	
+
 	// Log client request headers as info
 	logger := logging.NewLogger()
 	logger.InfoLog("Client Request Headers:")
@@ -220,65 +220,31 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response, ctx con
 		}
 		logging.NewLogger().DebugLog("Raw upstream line: %s", strings.TrimSpace(line))
 
-		if strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
-			data = strings.TrimRight(data, "\n")
-			logging.NewLogger().DebugLog("Extracted data part: %s", data)
+		if stuttering && strings.HasPrefix(line, "data: ") {
+			// Determine if stuttering continues
+			stillStuttering, stutterErr := stutteringProcess(buf, line)
 
-			if data == "[DONE]" {
-				fmt.Fprintf(w, "data: [DONE]\n\n")
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
-				}
+			if stutterErr != nil {
 				break
 			}
-
-			if stuttering {
-				// Determine if stuttering continues
-				stillStuttering, err := stutteringProcess(buf, data)
-				if err != nil {
-					logging.NewLogger().ErrorLog("Error in stutteringProcess: %v", err)
-					// If an error occurs, send the current data and stop stuttering
-					fmt.Fprintf(w, "data: %s\n\n", data)
-					if flusher, ok := w.(http.Flusher); ok {
-						flusher.Flush()
-					}
-					stuttering = false // Stop stuttering on error
-					buf = ""           // Clear buffer
-				} else {
-					if stillStuttering {
-						// Stuttering continues: update buffer with current data, suppress output
-						buf = data
-					} else {
-						// Stuttering has resolved: flush buffered content then current content
-						// buf now holds the JSON string of the first complete chunk
-						// data is the JSON string of the current chunk
-						fmt.Fprintf(w, "data: %s\n\n", buf) // Flush buffered
-						if flusher, ok := w.(http.Flusher); ok {
-							flusher.Flush()
-						}
-						fmt.Fprintf(w, "data: %s\n\n", data) // Flush current
-						if flusher, ok := w.(http.Flusher); ok {
-							flusher.Flush()
-						}
-						stuttering = false // Stuttering has ended
-						buf = ""           // Clear buffer
-					}
-				}
-			} else {
-				// If not stuttering, just forward the data directly
-				fmt.Fprintf(w, "data: %s\n\n", data)
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
-				}
+			if stillStuttering {
+				// Stuttering continues: update buffer with current line, suppress output
+				buf = line
+				continue
 			}
-		} else { // Handle non-data lines (event, :, empty)
-			logging.NewLogger().DebugLog("Non-data line: %s", strings.TrimSpace(line))
-			fmt.Fprintf(w, "%s", line)
+			// Stuttering has resolved: flush buffered content
+			fmt.Fprintf(w, "%s", buf) // Flush buffered (preserving original whitespace)
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
+			stuttering = false // Stuttering has ended
 		}
+		// forward the line directly (data or non-data)
+		fmt.Fprintf(w, "%s", line)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+
 	}
 }
 
@@ -371,7 +337,7 @@ func ModelsHandler(w http.ResponseWriter, r *http.Request) {
 func SetProxyHeaders(req *http.Request, accessToken string) {
 	// Clear all existing headers
 	req.Header = make(http.Header)
-	
+
 	// Set only the headers that the proxy explicitly defines
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json") // Always JSON for body
@@ -387,8 +353,11 @@ func SetProxyHeaders(req *http.Request, accessToken string) {
 //   - true if stuttering continues (meaning the current chunk should be buffered and suppressed).
 //   - false if stuttering has resolved (meaning the buffered content and current chunk should be flushed).
 //   - err: Any error encountered during processing.
-func stutteringProcess(buf string, currentChunkData string) (bool, error) {
-	rawCurrentChunk := chunkToJson(currentChunkData)
+func stutteringProcess(buf string, currentLine string) (bool, error) {
+	// Extract JSON data from the full line (removing "data: " prefix and trailing newlines)
+	currentData := strings.TrimPrefix(currentLine, "data: ")
+	currentData = strings.TrimRight(currentData, "\n")
+	rawCurrentChunk := chunkToJson(currentData)
 	if rawCurrentChunk == nil {
 		// If current chunk is malformed/uninteresting, consider stuttering resolved for this path,
 		// allowing the main handler to decide how to proceed (e.g., just forward).
@@ -402,8 +371,11 @@ func stutteringProcess(buf string, currentChunkData string) (bool, error) {
 		return true, nil // Still stuttering
 	}
 
+	// Extract JSON data from the buffered full line
+	bufferedData := strings.TrimPrefix(buf, "data: ")
+	bufferedData = strings.TrimRight(bufferedData, "\n")
 	// 'buf' now holds the full original JSON string of the previously buffered chunk.
-	rawBufferedChunk := chunkToJson(buf)
+	rawBufferedChunk := chunkToJson(bufferedData)
 	if rawBufferedChunk == nil {
 		// If buffered chunk is malformed, stuttering cannot be determined.
 		// Consider stuttering resolved to avoid blocking.
@@ -439,7 +411,7 @@ func chunkToJson(chunk string) map[string]interface{} {
 		return nil
 	}
 
-	jsonStr := trimmedChunk // The "data:" prefix is already removed at this point
+	jsonStr := trimmedChunk // The "data:" prefix should already be removed at this point
 
 	var raw map[string]interface{}
 	err := json.Unmarshal([]byte(jsonStr), &raw)
