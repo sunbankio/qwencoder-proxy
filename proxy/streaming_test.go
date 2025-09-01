@@ -383,6 +383,6 @@ func BenchmarkStreamProcessor_ProcessLine(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		processor.ProcessLine(testLine)
+		_ = processor.ProcessLine(testLine)
 	}
 }

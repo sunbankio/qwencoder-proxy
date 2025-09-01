@@ -64,6 +64,7 @@ func TestHTTPClients(t *testing.T) {
 	client := cfg.SharedHTTPClient()
 	if client == nil {
 		t.Error("Expected shared HTTP client to be created, got nil")
+		return
 	}
 
 	if client.Timeout.Seconds() != 300 {
@@ -74,6 +75,7 @@ func TestHTTPClients(t *testing.T) {
 	streamingClient := cfg.StreamingHTTPClient()
 	if streamingClient == nil {
 		t.Error("Expected streaming HTTP client to be created, got nil")
+		return
 	}
 
 	if streamingClient.Timeout.Seconds() != 900 {

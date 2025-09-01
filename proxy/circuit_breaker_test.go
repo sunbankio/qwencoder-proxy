@@ -68,7 +68,10 @@ func TestCircuitBreaker_Recovery(t *testing.T) {
 	// After successful half-open tries, should be closed
 	// Need to execute enough times to close the circuit
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return nil })
+		err := cb.Execute(func() error { return nil })
+		if err != nil {
+			t.Errorf("Expected successful execution, got error: %v", err)
+		}
 	}
 	
 	if cb.GetState() != CircuitClosed {
@@ -373,7 +376,7 @@ func BenchmarkCircuitBreaker_Execute(b *testing.B) {
 	
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cb.Execute(func() error {
+		_ = cb.Execute(func() error {
 			return nil
 		})
 	}
@@ -384,7 +387,7 @@ func BenchmarkRetryWithBackoff_Execute(b *testing.B) {
 	
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		retry.Execute(func() error {
+		_ = retry.Execute(func() error {
 			return nil
 		})
 	}

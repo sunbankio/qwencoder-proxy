@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -242,8 +243,8 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: resp.StatusCode}
 
 	if isClientStreaming {
-		// Use the new streaming handler
-		HandleStreamingResponse(responseWriter, resp, r.Context())
+		// Use the new configurable streaming handler that can switch between architectures
+		HandleStreamingResponseWithConfig(responseWriter, resp, r.Context(), nil)
 	} else {
 		handleNonStreamingResponse(responseWriter, resp)
 	}
@@ -262,6 +263,93 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		responseWriter.size,       // response size
 		duration,
 	)
+}
+
+// handleStreamingResponse processes streaming responses with stuttering logic and connection cancellation
+func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx context.Context) {
+	// Copy all headers from the upstream response to the client response,
+	// deferring to the upstream service to set correct streaming headers.
+	for name, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(name, value)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	reader := bufio.NewReader(resp.Body)
+	stuttering := true
+	buf := "" // Buffered content for stuttering control
+
+	for {
+		// Check if client has disconnected
+		select {
+		case <-ctx.Done():
+			logging.NewLogger().DebugLog("Client disconnected during streaming, stopping response")
+			return
+		default:
+		}
+
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				logging.NewLogger().ErrorLog("Error reading from upstream: %v", err)
+			}
+			break
+		}
+		logging.NewLogger().DebugLog("Raw upstream line: %s", strings.TrimSpace(line))
+
+		// If the line is empty or only contains whitespace, skip it.
+		if len(strings.TrimSpace(line)) == 0 {
+			continue
+		}
+
+		if stuttering && strings.HasPrefix(line, "data: ") {
+			// Extract JSON data from the full line
+			data := strings.TrimPrefix(line, "data: ")
+			data = strings.TrimRight(data, "\n")
+
+			// Determine if stuttering continues
+			stillStuttering := stutteringProcess(buf, data)
+			if stillStuttering {
+				// Stuttering continues: update buffer with current data, suppress output
+				buf = data // Buffer just the JSON data, not the full line
+				logging.NewLogger().DebugLog("Stuttering: true, Buffering: %s", data)
+				continue
+			}
+			// Stuttering has resolved: flush buffered content then current content
+			fmt.Fprintf(w, "data: %s\n\n", buf)  // Flush buffered JSON data with proper formatting
+			fmt.Fprintf(w, "data: %s\n\n", data) // Flush current JSON data with proper formatting
+			w.Flush()
+			logging.NewLogger().DebugLog("Stuttering Resolved: Flushed Buffered: %s, Flushed Current: %s", buf, data)
+
+			stuttering = false // Stuttering has ended
+			buf = ""           // Clear buffer
+			continue           // Skip the general forwarding logic below
+		}
+		// forward the line directly (data or non-data)
+		if strings.HasPrefix(line, "data: ") {
+			// For data lines, extract JSON and format properly
+			data := strings.TrimPrefix(line, "data: ")
+			data = strings.TrimRight(data, "\n")
+
+			// Handle [DONE] message
+			if data == "[DONE]" {
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				w.Flush()
+				logging.NewLogger().DebugLog("Received [DONE] message, stopping streaming.")
+				break
+			}
+
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			logging.NewLogger().DebugLog("Forwarding data line: %s", data)
+		} else {
+			// For non-data lines, forward as-is
+			fmt.Fprintf(w, "%s", line)
+			logging.NewLogger().DebugLog("Forwarding non-data line: %s", strings.TrimSpace(line))
+		}
+		w.Flush()
+
+	}
 }
 
 // handleNonStreamingResponse processes non-streaming responses
@@ -361,4 +449,83 @@ func SetProxyHeaders(req *http.Request, accessToken string) {
 	req.Header.Set("X-DashScope-CacheControl", "enable")
 	req.Header.Set("X-DashScope-UserAgent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 	req.Header.Set("X-DashScope-AuthType", "qwen-oauth")
+}
+
+// stutteringProcess determines if stuttering is still occurring.
+// It assumes stuttering is active when called by ProxyHandler.
+// Returns:
+//   - true if stuttering continues (meaning the current chunk should be buffered and suppressed).
+//   - false if stuttering has resolved (meaning the buffered content and current chunk should be flushed).
+func stutteringProcess(buf string, currentChunkData string) bool {
+	rawCurrentChunk := chunkToJson(currentChunkData)
+	if rawCurrentChunk == nil {
+		// If current chunk is malformed/uninteresting, consider stuttering resolved for this path,
+		// allowing the main handler to decide how to proceed (e.g., just forward).
+		return false
+	}
+	extractedCurrentContent := extractDeltaContent(rawCurrentChunk)
+
+	if buf == "" {
+		// This is the very first content chunk, so we consider it part of the stuttering.
+		// It will be stored in 'buf' by the calling ProxyHandler.
+		return true // Still stuttering
+	}
+
+	// 'buf' now holds the JSON string of the previously buffered chunk.
+	rawBufferedChunk := chunkToJson(buf)
+	if rawBufferedChunk == nil {
+		// If buffered chunk is malformed, stuttering cannot be determined.
+		// Consider stuttering resolved to avoid blocking.
+		return false
+	}
+	extractedBufferedContent := extractDeltaContent(rawBufferedChunk)
+
+	// Check if current content is a continuation (prefix relationship) of the buffered content.
+	if hasPrefixRelationship(extractedCurrentContent, extractedBufferedContent) {
+		return true // Still stuttering
+	} else {
+		return false // Stuttering has resolved
+	}
+}
+
+func hasPrefixRelationship(a, b string) bool {
+	if len(a) < len(b) {
+		return strings.HasPrefix(b, a)
+	}
+	return strings.HasPrefix(a, b)
+}
+
+func extractDeltaContent(raw map[string]interface{}) string {
+	// it's safe to do this, because raw is validated in chunkToJson
+	return raw["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})["content"].(string)
+}
+
+func chunkToJson(chunk string) map[string]interface{} {
+	trimmedChunk := strings.TrimSpace(chunk)
+
+	// Special handling for [DONE] message which is not valid JSON
+	if trimmedChunk == "[DONE]" {
+		return nil
+	}
+
+	jsonStr := trimmedChunk // The "data:" prefix should already be removed at this point
+
+	var raw map[string]interface{}
+	err := json.Unmarshal([]byte(jsonStr), &raw)
+	if err != nil {
+		return nil // Malformed JSON, return nil
+	}
+
+	// Check for choices[0].delta.content and its length
+	if choices, ok := raw["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choiceMap, ok := choices[0].(map[string]interface{}); ok {
+			if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
+				if _, ok := delta["content"].(string); ok { // Only check if content exists as a string
+					return raw
+				}
+			}
+		}
+	}
+
+	return nil // Missing required fields or content is not a string, or content is empty
 }

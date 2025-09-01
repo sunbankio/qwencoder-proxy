@@ -340,7 +340,7 @@ type ErrorRecoveryManager struct {
 // NewErrorRecoveryManager creates a new error recovery manager
 func NewErrorRecoveryManager() *ErrorRecoveryManager {
 	erm := &ErrorRecoveryManager{
-		maxErrors:          10,
+		maxErrors:          10, // Default max errors
 		recoveryStrategies: make(map[ErrorType]RecoveryStrategy),
 		logger:             logging.NewLogger(),
 	}

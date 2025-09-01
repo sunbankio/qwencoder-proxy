@@ -110,8 +110,8 @@ func TestHandleStreamingResponseV2(t *testing.T) {
 
 			ctx := context.Background()
 
-			// Call the new streaming handler
-			handleStreamingResponseV2(wrapper, resp, ctx)
+			// Call the streaming handler
+			handleStreamingResponse(wrapper, resp, ctx)
 
 			// Check the output
 			output := recorder.Body.String()
@@ -125,63 +125,35 @@ func TestHandleStreamingResponseV2(t *testing.T) {
 	}
 }
 
-func TestHandleStreamingResponseWithConfig(t *testing.T) {
+func TestHandleStreamingResponse(t *testing.T) {
 	responseBody := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"Hello"}}]}`,
 		`data: [DONE]`,
 		"",
 	}, "\n")
 
-	tests := []struct {
-		name   string
-		config *StreamingConfig
-	}{
-		{
-			name: "Use new architecture",
-			config: &StreamingConfig{
-				EnableNewArchitecture: true,
-				MaxErrors:             10,
-			},
-		},
-		{
-			name: "Use legacy architecture",
-			config: &StreamingConfig{
-				EnableNewArchitecture: false,
-				MaxErrors:             10,
-			},
-		},
-		{
-			name:   "Use default config",
-			config: nil,
-		},
+	recorder := httptest.NewRecorder()
+	wrapper := &responseWriterWrapper{
+		ResponseWriter: recorder,
+		statusCode:     http.StatusOK,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			wrapper := &responseWriterWrapper{
-				ResponseWriter: recorder,
-				statusCode:     http.StatusOK,
-			}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(responseBody)),
+	}
+	resp.Header.Set("Content-Type", "text/event-stream")
 
-			resp := &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(responseBody)),
-			}
-			resp.Header.Set("Content-Type", "text/event-stream")
+	ctx := context.Background()
 
-			ctx := context.Background()
+	// This should not panic or error
+	HandleStreamingResponse(wrapper, resp, ctx)
 
-			// This should not panic or error
-			HandleStreamingResponseWithConfig(wrapper, resp, ctx, tt.config)
-
-			// Basic check that something was written
-			output := recorder.Body.String()
-			if len(output) == 0 {
-				t.Error("Expected some output, got empty string")
-			}
-		})
+	// Basic check that something was written
+	output := recorder.Body.String()
+	if len(output) == 0 {
+		t.Error("Expected some output, got empty string")
 	}
 }
 
@@ -210,14 +182,14 @@ func TestStreamingResponseV2_ClientDisconnection(t *testing.T) {
 	cancel() // Cancel immediately
 
 	// This should handle the cancellation gracefully
-	handleStreamingResponseV2(wrapper, resp, ctx)
+	handleStreamingResponse(wrapper, resp, ctx)
 
 	// The function should return without panicking
 	// Output might be empty or partial due to immediate cancellation
 }
 
-// Benchmark the new streaming handler
-func BenchmarkHandleStreamingResponseV2(b *testing.B) {
+// Benchmark the streaming handler
+func BenchmarkHandleStreamingResponse(b *testing.B) {
 	responseBody := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"Hello"}}]}`,
 		`data: {"choices":[{"delta":{"content":"Hello world"}}]}`,
@@ -241,12 +213,12 @@ func BenchmarkHandleStreamingResponseV2(b *testing.B) {
 		}
 
 		ctx := context.Background()
-		handleStreamingResponseV2(wrapper, resp, ctx)
+		handleStreamingResponse(wrapper, resp, ctx)
 	}
 }
 
-// Compare performance between old and new handlers
-func BenchmarkStreamingComparison(b *testing.B) {
+// Benchmark the streaming handler
+func BenchmarkStreamingHandler(b *testing.B) {
 	responseBody := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"Hello"}}]}`,
 		`data: {"choices":[{"delta":{"content":"Hello world"}}]}`,
@@ -255,41 +227,20 @@ func BenchmarkStreamingComparison(b *testing.B) {
 		"",
 	}, "\n")
 
-	b.Run("Legacy", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			recorder := httptest.NewRecorder()
-			wrapper := &responseWriterWrapper{
-				ResponseWriter: recorder,
-				statusCode:     http.StatusOK,
-			}
-
-			resp := &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(responseBody)),
-			}
-
-			ctx := context.Background()
-			handleStreamingResponse(wrapper, resp, ctx)
+	for i := 0; i < b.N; i++ {
+		recorder := httptest.NewRecorder()
+		wrapper := &responseWriterWrapper{
+			ResponseWriter: recorder,
+			statusCode:     http.StatusOK,
 		}
-	})
 
-	b.Run("New", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			recorder := httptest.NewRecorder()
-			wrapper := &responseWriterWrapper{
-				ResponseWriter: recorder,
-				statusCode:     http.StatusOK,
-			}
-
-			resp := &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(responseBody)),
-			}
-
-			ctx := context.Background()
-			handleStreamingResponseV2(wrapper, resp, ctx)
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(responseBody)),
 		}
-	})
+
+		ctx := context.Background()
+		handleStreamingResponse(wrapper, resp, ctx)
+	}
 }
