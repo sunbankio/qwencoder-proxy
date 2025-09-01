@@ -415,7 +415,6 @@ func AuthenticateWithOAuth() error {
 	// Try to open the verification URI in the browser
 	if err := openBrowser(verificationURL); err != nil {
 		logging.NewLogger().WarningLog("Failed to open browser automatically: %v", err)
-		fmt.Println("Please manually open the Verification URI in your browser.")
 	}
 
 	// Poll for the token
