@@ -20,6 +20,19 @@ import (
 	"github.com/sunbankio/qwencoder-proxy/logging"
 )
 
+// oauthHTTPClient is a dedicated HTTP client for OAuth operations
+var oauthHTTPClient *http.Client
+
+// initOAuthHTTPClient initializes the OAuth HTTP client with appropriate settings
+func initOAuthHTTPClient() {
+	if oauthHTTPClient == nil {
+		// Use conservative timeouts for OAuth operations since they are infrequent
+		oauthHTTPClient = &http.Client{
+			Timeout: 30 * time.Second, // Shorter timeout for auth operations
+		}
+	}
+}
+
 // OAuthCreds represents the structure of the qwenproxy_creds.json file
 type OAuthCreds struct {
 	AccessToken  string `json:"access_token"`
@@ -115,6 +128,9 @@ func IsTokenValid(credentials OAuthCreds) bool {
 
 // RefreshAccessToken refreshes the OAuth token using the refresh token
 func RefreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
+	// Initialize OAuth HTTP client if not already done
+	initOAuthHTTPClient()
+	
 	if credentials.RefreshToken == "" {
 		return OAuthCreds{}, fmt.Errorf("no refresh token available")
 	}
@@ -133,7 +149,7 @@ func RefreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := SharedHTTPClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return OAuthCreds{}, fmt.Errorf("token refresh request failed: %v", err)
 	}
@@ -209,6 +225,8 @@ func generatePKCEParams() (*PKCEParams, error) {
 
 // initiateDeviceAuth initiates the OAuth 2.0 Device Authorization Flow
 func initiateDeviceAuth(pkceParams *PKCEParams) (*DeviceAuthResponse, error) {
+	// Initialize OAuth HTTP client if not already done
+	initOAuthHTTPClient()
 
 	// Device authorization endpoint
 	deviceAuthURL := "https://chat.qwen.ai/api/v1/oauth2/device/code"
@@ -231,7 +249,7 @@ func initiateDeviceAuth(pkceParams *PKCEParams) (*DeviceAuthResponse, error) {
 	req.Header.Set("Accept", "application/json")
 
 	// Send the request
-	resp, err := SharedHTTPClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send device auth request: %v", err)
 	}
@@ -259,6 +277,9 @@ func initiateDeviceAuth(pkceParams *PKCEParams) (*DeviceAuthResponse, error) {
 
 // exchangeDeviceCodeForToken exchanges the device code for access/refresh tokens
 func exchangeDeviceCodeForToken(deviceCode, codeVerifier string) (*OAuthTokenResponse, error) {
+	// Initialize OAuth HTTP client if not already done
+	initOAuthHTTPClient()
+	
 	// Prepare the request body
 	data := url.Values{}
 	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
@@ -277,7 +298,7 @@ func exchangeDeviceCodeForToken(deviceCode, codeVerifier string) (*OAuthTokenRes
 	req.Header.Set("Accept", "application/json")
 
 	// Send the request
-	resp, err := SharedHTTPClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send device token exchange request: %v", err)
 	}

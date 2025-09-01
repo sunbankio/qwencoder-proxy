@@ -1,32 +1,12 @@
 package qwenclient
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"strings"
 
 	"github.com/sunbankio/qwencoder-proxy/auth"
 )
-
-type NonStreamResponse struct {
-	Usage *UsageDetails `json:"usage,omitempty"`
-}
-
-type UsageDetails struct {
-	PromptTokens        int                  `json:"prompt_tokens,omitempty"`
-	CompletionTokens    int                  `json:"completion_tokens,omitempty"`
-	TotalTokens         int                  `json:"total_tokens,omitempty"`
-	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
-}
-
-type PromptTokensDetails struct {
-	CacheType    string `json:"cache_type,omitempty"`
-	CachedTokens int    `json:"cached_tokens,omitempty"`
-}
 
 // GetValidTokenAndEndpoint gets a valid token and determines the correct endpoint
 func GetValidTokenAndEndpoint() (string, string, error) {
@@ -67,31 +47,4 @@ func GetValidTokenAndEndpoint() (string, string, error) {
 		baseEndpoint = baseEndpoint + suffix
 	}
 	return credentials.AccessToken, baseEndpoint, nil
-}
-
-// PrepareRequest constructs the target URL and processes the request body
-func PrepareRequest(r *http.Request, targetEndpoint string) (string, map[string]interface{}, error) {
-	// Construct the full target URL
-	requestPath := r.URL.Path
-	if strings.HasPrefix(requestPath, "/v1") && strings.HasSuffix(targetEndpoint, "/v1") {
-		requestPath = strings.TrimPrefix(requestPath, "/v1")
-	}
-	targetURL := targetEndpoint + requestPath
-
-	// Read the request body
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to read request body: %w", err)
-	}
-	// Restore the body for further reads downstream (e.g., in proxy handlers)
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-	originalBody := make(map[string]interface{})
-	if len(bodyBytes) > 0 {
-		if err := json.Unmarshal(bodyBytes, &originalBody); err != nil {
-			return "", nil, fmt.Errorf("failed to unmarshal request body: %w", err)
-		}
-	}
-
-	return targetURL, originalBody, nil
 }
