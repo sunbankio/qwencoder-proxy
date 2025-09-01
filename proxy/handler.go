@@ -5,11 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -17,8 +15,6 @@ import (
 	"qwenproxy/logging"
 	"qwenproxy/qwenclient"
 )
-
-var deepDebug = flag.Bool("deepdebug", false, "Enable deep debugging to log raw responses to file")
 
 // Model represents the structure of a model
 type Model struct {
@@ -149,6 +145,9 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get client IP
 	clientIP := r.RemoteAddr
+
+	// Log incoming request details
+	logging.NewLogger().DebugLog("Incoming Request: Method=%s URL=%s Content-Length=%d ClientIP=%s", r.Method, r.URL.Path, r.ContentLength, clientIP)
 	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
 		clientIP = ip
 	} else if ip := r.Header.Get("X-Real-IP"); ip != "" {
@@ -267,21 +266,6 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	// Deep debug file for capturing raw response
-	var debugFile *os.File
-	if *deepDebug {
-		var err error
-		debugFile, err = os.Create("/tmp/qwenproxy_deepdebug.log")
-		if err != nil {
-			logging.NewLogger().ErrorLog("Failed to create debug file: %v", err)
-		}
-		defer func() {
-			if debugFile != nil {
-				debugFile.Close()
-			}
-		}()
-	}
-
 	reader := bufio.NewReader(resp.Body)
 	stuttering := true
 	buf := "" // Buffered content for stuttering control
@@ -319,24 +303,14 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 			if stillStuttering {
 				// Stuttering continues: update buffer with current data, suppress output
 				buf = data  // Buffer just the JSON data, not the full line
-				// Deep debug logging
-				if *deepDebug && debugFile != nil {
-					debugFile.WriteString(fmt.Sprintf("[STUTTERING] Buffering data: %s", data))
-					debugFile.Sync()
-				}
+				logging.NewLogger().DebugLog("Stuttering: true, Buffering: %s", data)
 				continue
 			}
 			// Stuttering has resolved: flush buffered content then current content
 			fmt.Fprintf(w, "data: %s\n\n", buf)   // Flush buffered JSON data with proper formatting
 			fmt.Fprintf(w, "data: %s\n\n", data)  // Flush current JSON data with proper formatting
 			w.Flush()
-			
-			// Deep debug logging
-			if *deepDebug && debugFile != nil {
-				debugFile.WriteString(fmt.Sprintf("[RESOLVED] Flushing buffered: data: %s\n\n", buf))
-				debugFile.WriteString(fmt.Sprintf("[RESOLVED] Flushing current: data: %s\n\n", data))
-				debugFile.Sync()
-			}
+			logging.NewLogger().DebugLog("Stuttering Resolved: Flushed Buffered: %s, Flushed Current: %s", buf, data)
 			
 			stuttering = false // Stuttering has ended
 			buf = ""           // Clear buffer
@@ -352,35 +326,18 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 			if data == "[DONE]" {
 				fmt.Fprintf(w, "data: [DONE]\n\n")
 				w.Flush()
-				if *deepDebug && debugFile != nil {
-					debugFile.WriteString("[FORWARD] [DONE] message\n")
-					debugFile.Sync()
-				}
+				logging.NewLogger().DebugLog("Received [DONE] message, stopping streaming.")
 				break
 			}
 			
 			fmt.Fprintf(w, "data: %s\n\n", data)
+			logging.NewLogger().DebugLog("Forwarding data line: %s", data)
 		} else {
 			// For non-data lines, forward as-is
 			fmt.Fprintf(w, "%s", line)
+			logging.NewLogger().DebugLog("Forwarding non-data line: %s", strings.TrimSpace(line))
 		}
 		w.Flush()
-		
-		// Deep debug logging
-		if *deepDebug && debugFile != nil {
-			if strings.HasPrefix(line, "data: ") {
-				data := strings.TrimPrefix(line, "data: ")
-				data = strings.TrimRight(data, "\n")
-				if data == "[DONE]" {
-					debugFile.WriteString("[FORWARD] [DONE] message\n")
-				} else {
-					debugFile.WriteString(fmt.Sprintf("[FORWARD] Data line: data: %s\n\n", data))
-				}
-			} else {
-				debugFile.WriteString(fmt.Sprintf("[FORWARD] Non-data line: %s", line))
-			}
-			debugFile.Sync()
-		}
 
 	}
 }
