@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -15,6 +17,8 @@ import (
 	"qwenproxy/logging"
 	"qwenproxy/qwenclient"
 )
+
+var deepDebug = flag.Bool("deepdebug", false, "Enable deep debugging to log raw responses to file")
 
 // Model represents the structure of a model
 type Model struct {
@@ -263,6 +267,21 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 	}
 	w.WriteHeader(resp.StatusCode)
 
+	// Deep debug file for capturing raw response
+	var debugFile *os.File
+	if *deepDebug {
+		var err error
+		debugFile, err = os.Create("/tmp/qwenproxy_deepdebug.log")
+		if err != nil {
+			logging.NewLogger().ErrorLog("Failed to create debug file: %v", err)
+		}
+		defer func() {
+			if debugFile != nil {
+				debugFile.Close()
+			}
+		}()
+	}
+
 	reader := bufio.NewReader(resp.Body)
 	stuttering := true
 	buf := "" // Buffered content for stuttering control
@@ -291,25 +310,94 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 		}
 
 		if stuttering && strings.HasPrefix(line, "data: ") {
+			// Extract JSON data from the full line
+			data := strings.TrimPrefix(line, "data: ")
+			data = strings.TrimRight(data, "\n")
+			
 			// Determine if stuttering continues
-			stillStuttering, stutterErr := stutteringProcess(buf, line)
+			stillStuttering, stutterErr := stutteringProcess(buf, data)
 
 			if stutterErr != nil {
-				break
-			}
-			if stillStuttering {
-				// Stuttering continues: update buffer with current line, suppress output
-				buf = line
+				logging.NewLogger().ErrorLog("Error in stutteringProcess: %v", stutterErr)
+				// If an error occurs, send the current data and stop stuttering
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				w.Flush()
+				stuttering = false // Stop stuttering on error
+				buf = ""           // Clear buffer
+				
+				// Deep debug logging
+				if *deepDebug && debugFile != nil {
+					debugFile.WriteString(fmt.Sprintf("[ERROR] Stuttering process error: %v\n", stutterErr))
+					debugFile.WriteString(fmt.Sprintf("[ERROR] Sending current data: data: %s\n\n", data))
+					debugFile.Sync()
+				}
 				continue
 			}
-			// Stuttering has resolved: flush buffered content
-			fmt.Fprintf(w, "%s", buf) // Flush buffered (preserving original whitespace)
+			if stillStuttering {
+				// Stuttering continues: update buffer with current data, suppress output
+				buf = data  // Buffer just the JSON data, not the full line
+				// Deep debug logging
+				if *deepDebug && debugFile != nil {
+					debugFile.WriteString(fmt.Sprintf("[STUTTERING] Buffering data: %s", data))
+					debugFile.Sync()
+				}
+				continue
+			}
+			// Stuttering has resolved: flush buffered content then current content
+			fmt.Fprintf(w, "data: %s\n\n", buf)   // Flush buffered JSON data with proper formatting
+			fmt.Fprintf(w, "data: %s\n\n", data)  // Flush current JSON data with proper formatting
 			w.Flush()
+			
+			// Deep debug logging
+			if *deepDebug && debugFile != nil {
+				debugFile.WriteString(fmt.Sprintf("[RESOLVED] Flushing buffered: data: %s\n\n", buf))
+				debugFile.WriteString(fmt.Sprintf("[RESOLVED] Flushing current: data: %s\n\n", data))
+				debugFile.Sync()
+			}
+			
 			stuttering = false // Stuttering has ended
+			buf = ""           // Clear buffer
+			continue           // Skip the general forwarding logic below
 		}
 		// forward the line directly (data or non-data)
-		fmt.Fprintf(w, "%s", line)
+		if strings.HasPrefix(line, "data: ") {
+			// For data lines, extract JSON and format properly
+			data := strings.TrimPrefix(line, "data: ")
+			data = strings.TrimRight(data, "\n")
+			
+			// Handle [DONE] message
+			if data == "[DONE]" {
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				w.Flush()
+				if *deepDebug && debugFile != nil {
+					debugFile.WriteString("[FORWARD] [DONE] message\n")
+					debugFile.Sync()
+				}
+				break
+			}
+			
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		} else {
+			// For non-data lines, forward as-is
+			fmt.Fprintf(w, "%s", line)
+		}
 		w.Flush()
+		
+		// Deep debug logging
+		if *deepDebug && debugFile != nil {
+			if strings.HasPrefix(line, "data: ") {
+				data := strings.TrimPrefix(line, "data: ")
+				data = strings.TrimRight(data, "\n")
+				if data == "[DONE]" {
+					debugFile.WriteString("[FORWARD] [DONE] message\n")
+				} else {
+					debugFile.WriteString(fmt.Sprintf("[FORWARD] Data line: data: %s\n\n", data))
+				}
+			} else {
+				debugFile.WriteString(fmt.Sprintf("[FORWARD] Non-data line: %s", line))
+			}
+			debugFile.Sync()
+		}
 
 	}
 }
@@ -419,11 +507,8 @@ func SetProxyHeaders(req *http.Request, accessToken string) {
 //   - true if stuttering continues (meaning the current chunk should be buffered and suppressed).
 //   - false if stuttering has resolved (meaning the buffered content and current chunk should be flushed).
 //   - err: Any error encountered during processing.
-func stutteringProcess(buf string, currentLine string) (bool, error) {
-	// Extract JSON data from the full line (removing "data: " prefix and trailing newlines)
-	currentData := strings.TrimPrefix(currentLine, "data: ")
-	currentData = strings.TrimRight(currentData, "\n")
-	rawCurrentChunk := chunkToJson(currentData)
+func stutteringProcess(buf string, currentChunkData string) (bool, error) {
+	rawCurrentChunk := chunkToJson(currentChunkData)
 	if rawCurrentChunk == nil {
 		// If current chunk is malformed/uninteresting, consider stuttering resolved for this path,
 		// allowing the main handler to decide how to proceed (e.g., just forward).
@@ -437,11 +522,8 @@ func stutteringProcess(buf string, currentLine string) (bool, error) {
 		return true, nil // Still stuttering
 	}
 
-	// Extract JSON data from the buffered full line
-	bufferedData := strings.TrimPrefix(buf, "data: ")
-	bufferedData = strings.TrimRight(bufferedData, "\n")
-	// 'buf' now holds the full original JSON string of the previously buffered chunk.
-	rawBufferedChunk := chunkToJson(bufferedData)
+	// 'buf' now holds the JSON string of the previously buffered chunk.
+	rawBufferedChunk := chunkToJson(buf)
 	if rawBufferedChunk == nil {
 		// If buffered chunk is malformed, stuttering cannot be determined.
 		// Consider stuttering resolved to avoid blocking.
