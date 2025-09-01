@@ -357,15 +357,10 @@ func ModelsHandler(w http.ResponseWriter, r *http.Request) {
 
 // SetProxyHeaders sets the required headers for the outgoing proxy request.
 func SetProxyHeaders(req *http.Request, accessToken string) {
-	// Copy headers from original request, but set necessary ones
-	for name, values := range req.Header {
-		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Content-Type") {
-			continue // Handled below or not relevant
-		}
-		for _, value := range values {
-			req.Header.Add(name, value)
-		}
-	}
+	// Clear all existing headers
+	req.Header = make(http.Header)
+	
+	// Set only the headers that the proxy explicitly defines
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json") // Always JSON for body
 	req.Header.Set("User-Agent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH))
