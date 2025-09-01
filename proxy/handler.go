@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,65 +10,173 @@ import (
 	"os"
 	"runtime"
 	"strings"
-	"time"
-	"bytes"
 
 	"qwenproxy/logging"
 	"qwenproxy/qwenclient"
-	"qwenproxy/streaming"
-	"qwenproxy/utils"
 )
 
-// HandleResponse checks if the request is streaming and calls the appropriate handler
-func HandleResponse(w http.ResponseWriter, r *http.Request, accessToken, targetURL string, originalBody map[string]interface{}) {
-	// Check if client request is streaming. Default to false if "stream" field is not present.
-	isClientStreaming := false
-	if streamVal, ok := originalBody["stream"]; ok {
-		if streamBool, isBool := streamVal.(bool); isBool {
-			isClientStreaming = streamBool
+// ProxyHandler handles incoming requests and proxies them to the target endpoint
+func ProxyHandler(w http.ResponseWriter, r *http.Request) {
+	logging.NewLogger().DebugLog("Incoming Request Content-Length: %d", r.ContentLength)
+
+	var requestBodyBytes []byte
+	if r.Body != nil {
+		var err error
+		requestBodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			logging.NewLogger().ErrorLog("Failed to read request body: %v", err)
+			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
+			return
 		}
+		r.Body = io.NopCloser(bytes.NewBuffer(requestBodyBytes))
 	}
+	logging.NewLogger().DebugLog("Request Body: %s", string(requestBodyBytes))
 
-	if isClientStreaming {
-		// If client is streaming, call the streaming proxy handler
-		streaming.StreamProxyHandler(w, r, accessToken, targetURL, originalBody, time.Now(), SharedHTTPClient)
-	} else {
-		// If client is not streaming, call the non-streaming proxy handler
-		NonStreamProxyHandler(w, r, accessToken, targetURL, originalBody)
-	}
-}
-
-// NonStreamProxyHandler handles non-streaming requests
-func NonStreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, targetEndpoint string, originalBody map[string]interface{}) {
-	startTime := time.Now()
-
-	// Marshal the modified body for the upstream request
-	modifiedBodyBytes, err := json.Marshal(originalBody)
+	accessToken, targetEndpoint, err := qwenclient.GetValidTokenAndEndpoint()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to marshal request body: %v", err), http.StatusInternalServerError)
+		errorMsg := err.Error()
+		if strings.Contains(errorMsg, "credentials not found") || strings.Contains(errorMsg, "failed to refresh token") {
+			http.Error(w, fmt.Sprintf("Authentication required: %v. Please restart the proxy to re-authenticate.", err), http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, fmt.Sprintf("Failed to get valid token: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Log the non-streaming request details with comma-formatted bytes
-	logging.NewLogger().NonStreamLog("%s bytes %s to %s", utils.FormatIntWithCommas(int64(len(modifiedBodyBytes))), r.Method, r.URL.Path)
+	// Construct the targetURL, handling potential duplicate /v1
+	requestPath := r.URL.Path
+	if strings.HasPrefix(requestPath, "/v1") && strings.HasSuffix(targetEndpoint, "/v1") {
+		requestPath = strings.TrimPrefix(requestPath, "/v1")
+	}
+	targetURL := targetEndpoint + requestPath
 
-	// Debug: Log the raw request to upstream
-	logging.NewLogger().DebugLog("Upstream Request: %s %s", r.Method, targetEndpoint)
-	logging.NewLogger().DebugRawLog("Upstream Request Body: %s", string(modifiedBodyBytes))
+	var requestJSON map[string]interface{}
+	isClientStreaming := false
+	if len(requestBodyBytes) > 0 {
+		err = json.Unmarshal(requestBodyBytes, &requestJSON)
+		if err == nil {
+			if streamVal, ok := requestJSON["stream"].(bool); ok && streamVal {
+				isClientStreaming = true
+			}
+		} else {
+			logging.NewLogger().ErrorLog("Failed to unmarshal request body for stream check: %v", err)
+		}
+	}
+	logging.NewLogger().DebugLog("isClientStreaming evaluated to: %t", isClientStreaming)
 
-	// Debug: Log the upstream request details
-	logging.NewLogger().DebugLog("Upstream Request: %s %s", r.Method, targetEndpoint)
-	logging.NewLogger().DebugRawLog("Upstream Request Body: %s", string(modifiedBodyBytes))
-
-	// Create a new request to the target endpoint
-	req, err := http.NewRequest(r.Method, targetEndpoint, bytes.NewBuffer(modifiedBodyBytes))
+	req, err := http.NewRequest(r.Method, targetURL, bytes.NewBuffer(requestBodyBytes))
 	if err != nil {
 		http.Error(w, "Failed to create proxy request", http.StatusInternalServerError)
 		return
 	}
 
+	SetProxyHeaders(req, accessToken)
+
+	client := SharedHTTPClient
+
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to send request to target endpoint: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	logging.NewLogger().DebugLog("Upstream Response Status: %s", resp.Status)
+	logging.NewLogger().DebugLog("Upstream Response Headers: %v", resp.Header)
+
+	if isClientStreaming {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Cache-Control")
+		w.WriteHeader(resp.StatusCode)
+
+		reader := bufio.NewReader(resp.Body)
+		stutteringProcessor := stutteringProcess()
+
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err != io.EOF {
+					logging.NewLogger().ErrorLog("Error reading from upstream: %v", err)
+				}
+				break
+			}
+			logging.NewLogger().DebugLog("Raw upstream line: %s", strings.TrimSpace(line))
+
+			if strings.HasPrefix(line, "data: ") {
+				data := strings.TrimPrefix(line, "data: ")
+				data = strings.TrimRight(data, "\n")
+				logging.NewLogger().DebugLog("Extracted data part: %s", data)
+
+				jsonChunk := chunkToJson(data) // Pass the extracted data, not the raw line
+				if jsonChunk == nil {
+					logging.NewLogger().DebugLog("chunkToJson returned nil for data: %s", data)
+					continue // Skip this malformed or uninteresting chunk
+				}
+				logging.NewLogger().DebugLog("chunkToJson output: %v", jsonChunk)
+
+				if data == "[DONE]" {
+					fmt.Fprintf(w, "data: [DONE]\n\n")
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+					break
+				}
+
+				processedOutput := stutteringProcessor(data) // Pass the extracted data
+				logging.NewLogger().DebugLog("stutteringProcessor output: %s", strings.TrimSpace(processedOutput))
+
+				if processedOutput != "" {
+					fmt.Fprintf(w, "%s\n", processedOutput)
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
+			} else if strings.HasPrefix(line, "event: ") || strings.HasPrefix(line, ":") || line == "\n" {
+				logging.NewLogger().DebugLog("Non-data line: %s", strings.TrimSpace(line))
+				fmt.Fprintf(w, "%s", line)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+		}
+	} else {
+		logging.NewLogger().DebugLog("Not a streaming request, copying body directly.")
+		for name, values := range resp.Header {
+			for _, value := range values {
+				w.Header().Add(name, value)
+			}
+		}
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			logging.NewLogger().ErrorLog("Error copying response body: %v", err)
+		}
+	}
+}
+
+// ModelsHandler handles requests to /v1/models and serves the models.json file
+func ModelsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	logging.NewLogger().DebugLog("ModelsHandler received request")
+	modelsData, err := os.ReadFile("models.json")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to read models.json: %v", err), http.StatusInternalServerError)
+		logging.NewLogger().ErrorLog("Failed to read models.json: %v", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(modelsData); err != nil {
+		logging.NewLogger().ErrorLog("Error writing models data to response: %v", err)
+	}
+}
+
+// SetProxyHeaders sets the required headers for the outgoing proxy request.
+func SetProxyHeaders(req *http.Request, accessToken string) {
 	// Copy headers from original request, but set necessary ones
-	for name, values := range r.Header {
+	for name, values := range req.Header {
 		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Content-Type") {
 			continue // Handled below or not relevant
 		}
@@ -76,116 +186,90 @@ func NonStreamProxyHandler(w http.ResponseWriter, r *http.Request, accessToken, 
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json") // Always JSON for body
-	req.Header.Set("User-Agent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH)) // Add runtime import if not already present
+	req.Header.Set("User-Agent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 	req.Header.Set("X-DashScope-CacheControl", "enable")
 	req.Header.Set("X-DashScope-UserAgent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 	req.Header.Set("X-DashScope-AuthType", "qwen-oauth")
+}
 
-	// Use the shared HTTP client from the proxy package
-	client := SharedHTTPClient
-
-	// Send the request to the target endpoint
-	resp, err := client.Do(req)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to send request to target endpoint: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Copy headers from the upstream response to the client
-	for name, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(name, value)
+func stutteringProcess() func(chunk string) string { // Renamed dataChunk back to chunk
+	stuttering := true
+	buf := ""
+	return func(chunk string) string { // Changed dataChunk back to chunk
+		if !stuttering {
+			return "data: " + chunk + "\n\n"
 		}
-	}
-	// Capture the response body to parse usage information
-	var buf bytes.Buffer
-	teeReader := io.TeeReader(resp.Body, &buf)
+		raw := chunkToJson(chunk) // Pass chunk directly, not dataChunk
+		if len(raw) == 0 {
+			return "data: " + chunk + "\n\n"
+		}
+		extracted := extractDeltaContent(raw)
+		if hasPrefixRelationship(extracted, buf) {
+			buf = extracted
+			return ""
+		} else {
+			stuttering = false
 
-	// Copy the response body from upstream to the client
-	if _, err := io.Copy(w, teeReader); err != nil {
-		logging.NewLogger().ErrorLog("Failed to copy response body: %v", err)
-	}
-
-	// Debug: Log the raw response from upstream
-	logging.NewLogger().DebugLog("Upstream Response: %d %s", resp.StatusCode, resp.Status)
-	logging.NewLogger().DebugRawLog("Upstream Response Body: %s", buf.String())
-
-	// Calculate the duration
-	duration := time.Since(startTime).Milliseconds()
-
-	// Parse the response body to extract usage information
-	var response qwenclient.NonStreamResponse
-	if err := json.Unmarshal(buf.Bytes(), &response); err == nil && response.Usage != nil {
-		// Log the DONE message with usage information and duration, with comma-formatted numbers
-		usageBytes, _ := json.Marshal(response.Usage)
-		logging.NewLogger().DoneNonStreamLog("Raw Usage: %s, Duration: %s ms", string(usageBytes), utils.FormatIntWithCommas(duration))
-		logging.NewLogger().SeparatorLog()
-	} else {
-		// Log the DONE message with duration, with comma-formatted numbers
-		logging.NewLogger().DoneNonStreamLog("No usage information found in response, Duration: %s ms", utils.FormatIntWithCommas(duration))
-		logging.NewLogger().SeparatorLog()
+			modifiedChunk, err := prependDeltaContent(buf, raw)
+			if err != nil {
+				logging.NewLogger().ErrorLog("Error prepending delta content: %v", err)
+				return ""
+			}
+			return modifiedChunk
+		}
 	}
 }
 
-// ProxyHandler handles incoming requests and proxies them to the target endpoint
-func ProxyHandler(w http.ResponseWriter, r *http.Request) {
-	// Debug: Log the incoming client request
-	logging.NewLogger().DebugLog("Incoming Client Request: %s %s", r.Method, r.URL.String())
-	if r.Body != nil {
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			logging.NewLogger().ErrorLog("Failed to read client request body: %v", err)
-			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
-			return
-		}
-		logging.NewLogger().DebugRawLog("Client Request Body: %s", string(bodyBytes))
-		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore the body for further processing
+func hasPrefixRelationship(a, b string) bool {
+	if len(a) < len(b) {
+		return strings.HasPrefix(b, a)
 	}
-
-	// Get valid token and endpoint
-	accessToken, targetEndpoint, err := qwenclient.GetValidTokenAndEndpoint()
-	if err != nil {
-		// Check if the error is related to authentication
-		errorMsg := err.Error()
-		// If authentication is required, signal to the user to restart the proxy for authentication.
-		// The authentication flow will now be handled during server startup.
-		if strings.Contains(errorMsg, "credentials not found") || strings.Contains(errorMsg, "failed to refresh token") {
-			http.Error(w, fmt.Sprintf("Authentication required: %v. Please restart the proxy to re-authenticate.", err), http.StatusUnauthorized)
-			return
-		}
-		// For other errors, return a generic error message
-		http.Error(w, fmt.Sprintf("Failed to get valid token: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Prepare the request
-	targetURL, originalBody, err := qwenclient.PrepareRequest(r, targetEndpoint)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to prepare request: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Handle the response
-	// Pass the original request for streaming
-	HandleResponse(w, r, accessToken, targetURL, originalBody)
+	return strings.HasPrefix(a, b)
 }
 
-// ModelsHandler handles requests to /v1/models and serves the models.json file
-func ModelsHandler(w http.ResponseWriter, r *http.Request) {
-	// Set the correct content type for JSON
-	w.Header().Set("Content-Type", "application/json")
+func extractDeltaContent(raw map[string]interface{}) string {
+	// it's safe to do this, because raw is validated in chunkToJson
+	return raw["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})["content"].(string)
+}
 
-	// Read the models.json file
-	modelsData, err := os.ReadFile("models.json")
+func prependDeltaContent(buf string, raw map[string]interface{}) (string, error) {
+	prefix := "data: "
+	// it's safe to do this, because raw is validated in chunkToJson
+	raw["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})["content"] = buf + raw["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})["content"].(string)
+
+	modifiedChunkBytes, err := json.Marshal(raw)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to read models.json: %v", err), http.StatusInternalServerError)
-		return
+		return "", fmt.Errorf("failed to marshal modified chunk: %w", err)
+	}
+	return prefix + string(modifiedChunkBytes) + "\n\n", nil
+}
+
+func chunkToJson(chunk string) map[string]interface{} {
+	trimmedChunk := strings.TrimSpace(chunk)
+
+	// Special handling for [DONE] message which is not valid JSON
+	if trimmedChunk == "[DONE]" {
+		return nil
 	}
 
-	// Write the file content to the response
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(modelsData); err != nil {
-		logging.NewLogger().ErrorLog("Failed to write response: %v", err)
+	jsonStr := trimmedChunk // The "data:" prefix is already removed at this point
+
+	var raw map[string]interface{}
+	err := json.Unmarshal([]byte(jsonStr), &raw)
+	if err != nil {
+		return nil // Malformed JSON, return nil
 	}
+
+	// Check for choices[0].delta.content and its length
+	if choices, ok := raw["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choiceMap, ok := choices[0].(map[string]interface{}); ok {
+			if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
+				if _, ok := delta["content"].(string); ok { // Only check if content exists as a string
+					return raw
+				}
+			}
+		}
+	}
+
+	return nil // Missing required fields or content is not a string, or content is empty
 }
