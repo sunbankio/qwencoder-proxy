@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"time"
 
 	"qwenproxy/logging"
 	"qwenproxy/qwenclient"
@@ -59,6 +60,13 @@ type ModelsResponse struct {
 	Data   []Model `json:"data"`
 }
 
+// responseWriterWrapper wraps http.ResponseWriter to capture response size and status code
+type responseWriterWrapper struct {
+	http.ResponseWriter
+	statusCode int
+	size       int
+}
+
 // readRequestBody reads the request body and handles errors
 func readRequestBody(w http.ResponseWriter, r *http.Request) []byte {
 	var requestBodyBytes []byte
@@ -93,6 +101,26 @@ func constructTargetURL(requestPath, targetEndpoint string) string {
 	return targetEndpoint + requestPath
 }
 
+// WriteHeader captures the status code and calls the original WriteHeader
+func (w *responseWriterWrapper) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+// Write captures the response size and calls the original Write
+func (w *responseWriterWrapper) Write(b []byte) (int, error) {
+	size, err := w.ResponseWriter.Write(b)
+	w.size += size
+	return size, err
+}
+
+// Flush implements the http.Flusher interface
+func (w *responseWriterWrapper) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // checkIfStreaming determines if the request is a streaming request
 func checkIfStreaming(requestBodyBytes []byte) bool {
 	isClientStreaming := false
@@ -113,27 +141,24 @@ func checkIfStreaming(requestBodyBytes []byte) bool {
 
 // ProxyHandler handles incoming requests and proxies them to the target endpoint
 func ProxyHandler(w http.ResponseWriter, r *http.Request) {
-	logging.NewLogger().DebugLog("Incoming Request Content-Length: %d", r.ContentLength)
-
-	// Log client request headers as info
-	logger := logging.NewLogger()
-	logger.InfoLog("Client Request Headers:")
-	for name, values := range r.Header {
-		for _, value := range values {
-			logger.InfoLog("  %s: %s", name, value)
-		}
+	startTime := time.Now()
+	
+	// Get client IP
+	clientIP := r.RemoteAddr
+	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+		clientIP = ip
+	} else if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		clientIP = ip
 	}
 
 	requestBodyBytes := readRequestBody(w, r)
 	if requestBodyBytes == nil {
 		return // Error already handled
 	}
-	logging.NewLogger().DebugLog("Request Body: %s", string(requestBodyBytes))
 
 	// Check if the authorization token is "nostream" and modify streaming behavior accordingly
 	nostreamMode := false
 	if r.Header.Get("Authorization") == "Bearer nostream" {
-		logging.NewLogger().InfoLog("nostream token detected, treating streaming request as non-streaming")
 		nostreamMode = true
 	}
 
@@ -168,27 +193,67 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Check if the error is due to client disconnection
 		if ctx.Err() == context.Canceled {
-			logging.NewLogger().DebugLog("Client disconnected, cancelling upstream request")
+			// Log the request with error information
+			duration := time.Since(startTime).Milliseconds()
+			logging.NewLogger().ProxyRequestLog(
+				clientIP,
+				r.Method,
+				r.URL.Path,
+				len(requestBodyBytes),
+				isClientStreaming,
+				0, // upstream status (0 indicates error)
+				499, // client status (499 = Client Closed Request)
+				0, // response size
+				duration,
+			)
 			return
 		}
 		http.Error(w, fmt.Sprintf("Failed to send request to target endpoint: %v", err), http.StatusInternalServerError)
+		
+		// Log the request with error information
+		duration := time.Since(startTime).Milliseconds()
+		logging.NewLogger().ProxyRequestLog(
+			clientIP,
+			r.Method,
+			r.URL.Path,
+			len(requestBodyBytes),
+			isClientStreaming,
+			0, // upstream status (0 indicates error)
+			500, // client status
+			0, // response size
+			duration,
+		)
 		return
 	}
 
 	defer resp.Body.Close()
 
-	logging.NewLogger().DebugLog("Upstream Response Status: %s", resp.Status)
-	logging.NewLogger().DebugLog("Upstream Response Headers: %v", resp.Header)
-
+	// Create a response writer wrapper to capture response size
+	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: resp.StatusCode}
+	
 	if isClientStreaming {
-		handleStreamingResponse(w, resp, r.Context())
+		handleStreamingResponse(responseWriter, resp, r.Context())
 	} else {
-		handleNonStreamingResponse(w, resp)
+		handleNonStreamingResponse(responseWriter, resp)
 	}
+
+	// Log the request
+	duration := time.Since(startTime).Milliseconds()
+	logging.NewLogger().ProxyRequestLog(
+		clientIP,
+		r.Method,
+		r.URL.Path,
+		len(requestBodyBytes),
+		isClientStreaming,
+		resp.StatusCode, // upstream status
+		responseWriter.statusCode, // client status
+		responseWriter.size, // response size
+		duration,
+	)
 }
 
 // handleStreamingResponse processes streaming responses with stuttering logic and connection cancellation
-func handleStreamingResponse(w http.ResponseWriter, resp *http.Response, ctx context.Context) {
+func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx context.Context) {
 	// Copy all headers from the upstream response to the client response,
 	// deferring to the upstream service to set correct streaming headers.
 	for name, values := range resp.Header {
@@ -234,22 +299,18 @@ func handleStreamingResponse(w http.ResponseWriter, resp *http.Response, ctx con
 			}
 			// Stuttering has resolved: flush buffered content
 			fmt.Fprintf(w, "%s", buf) // Flush buffered (preserving original whitespace)
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
+			w.Flush()
 			stuttering = false // Stuttering has ended
 		}
 		// forward the line directly (data or non-data)
 		fmt.Fprintf(w, "%s", line)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		w.Flush()
 
 	}
 }
 
 // handleNonStreamingResponse processes non-streaming responses
-func handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) {
+func handleNonStreamingResponse(w *responseWriterWrapper, resp *http.Response) {
 	logging.NewLogger().DebugLog("Not a streaming request, copying body directly.")
 	for name, values := range resp.Header {
 		for _, value := range values {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 )
 
 // ANSI color codes
@@ -103,4 +104,19 @@ func (l *Logger) DebugRawLog(format string, v ...interface{}) {
 func (l *Logger) InfoLog(format string, v ...interface{}) {
 	message := fmt.Sprintf(format, v...)
 	l.Printf("%sℹ️  [INFO] %s%s", White, Reset, message)
+}
+
+// ProxyRequestLog logs proxy request information in a simplified format
+func (l *Logger) ProxyRequestLog(clientIP, method, path string, reqSize int, isStream bool, upstreamStatus, clientStatus int, respSize int, durationMs int64) {
+	l.Printf("%s %s %s %s | ReqSize: %d | Stream: %t | Upstream: %d | Client: %d | RespSize: %d | Duration: %dms",
+		time.Now().Format(time.RFC3339Nano),
+		clientIP,
+		method,
+		path,
+		reqSize,
+		isStream,
+		upstreamStatus,
+		clientStatus,
+		respSize,
+		durationMs)
 }
