@@ -24,17 +24,22 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoadConfigFromEnv(t *testing.T) {
+	// Save original environment variables
+	originalPort := os.Getenv("PORT")
+	originalMaxIdleConns := os.Getenv("MAX_IDLE_CONNS")
+	originalDebug := os.Getenv("DEBUG")
+	
+	// Clean up environment variables after test
+	defer func() {
+		os.Setenv("PORT", originalPort)
+		os.Setenv("MAX_IDLE_CONNS", originalMaxIdleConns)
+		os.Setenv("DEBUG", originalDebug)
+	}()
+
 	// Set some environment variables
 	os.Setenv("PORT", "9000")
 	os.Setenv("MAX_IDLE_CONNS", "100")
 	os.Setenv("DEBUG", "true")
-
-	// Clean up environment variables after test
-	defer func() {
-		os.Unsetenv("PORT")
-		os.Unsetenv("MAX_IDLE_CONNS")
-		os.Unsetenv("DEBUG")
-	}()
 
 	cfg := LoadConfig()
 
