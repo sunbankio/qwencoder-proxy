@@ -130,6 +130,20 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	logging.NewLogger().DebugLog("Request Body: %s", string(requestBodyBytes))
 
+	// Check if the authorization token is "nostream" and modify streaming behavior accordingly
+	nostreamMode := false
+	if r.Header.Get("Authorization") == "Bearer nostream" {
+		logging.NewLogger().InfoLog("nostream token detected, treating streaming request as non-streaming")
+		nostreamMode = true
+	}
+
+	// Check if streaming is enabled (considering nostream mode)
+	isClientStreaming := false
+	if !nostreamMode {
+		isClientStreaming = checkIfStreaming(requestBodyBytes)
+	}
+	// If nostreamMode is true, isClientStreaming remains false
+
 	accessToken, targetEndpoint, err := qwenclient.GetValidTokenAndEndpoint()
 	if err != nil {
 		handleAuthError(w, err)
@@ -137,8 +151,6 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetURL := constructTargetURL(r.URL.Path, targetEndpoint)
-
-	isClientStreaming := checkIfStreaming(requestBodyBytes)
 
 	req, err := http.NewRequest(r.Method, targetURL, bytes.NewBuffer(requestBodyBytes))
 	if err != nil {
