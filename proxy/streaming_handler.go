@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 
 	"github.com/sunbankio/qwencoder-proxy/logging"
 )
@@ -76,14 +78,47 @@ type StreamingConfig struct {
 	TimeoutSeconds        int
 }
 
-// DefaultStreamingConfig returns the default streaming configuration
+// DefaultStreamingConfig returns the default streaming configuration with environment variable support
 func DefaultStreamingConfig() *StreamingConfig {
-	return &StreamingConfig{
-		EnableNewArchitecture: false, // Start with false for gradual rollout
-		MaxErrors:             10,
-		BufferSize:            4096,
-		TimeoutSeconds:        900,
+	// Check environment variable for new architecture enablement
+	enableNew := false
+	if envVal := os.Getenv("ENABLE_NEW_STREAMING_ARCHITECTURE"); envVal != "" {
+		if val, err := strconv.ParseBool(envVal); err == nil {
+			enableNew = val
+		}
 	}
+
+	// Check for gradual rollout percentage
+	rolloutPercentage := 0
+	if envVal := os.Getenv("NEW_STREAMING_ROLLOUT_PERCENTAGE"); envVal != "" {
+		if val, err := strconv.Atoi(envVal); err == nil && val >= 0 && val <= 100 {
+			rolloutPercentage = val
+		}
+	}
+
+	// If rollout percentage is set and we're not explicitly enabled, use percentage
+	if rolloutPercentage > 0 && !enableNew {
+		// Simple deterministic rollout - in production you'd use request hash or user ID
+		// For now, enable if percentage >= 50 (simplified demo)
+		enableNew = (rolloutPercentage >= 50)
+	}
+
+	return &StreamingConfig{
+		EnableNewArchitecture: enableNew,
+		MaxErrors:             getEnvInt("STREAMING_MAX_ERRORS", 10),
+		BufferSize:            getEnvInt("STREAMING_BUFFER_SIZE", 4096),
+		TimeoutSeconds:        getEnvInt("STREAMING_TIMEOUT_SECONDS", 900),
+	}
+}
+
+// getEnvInt gets an integer environment variable with a default value
+func getEnvInt(key string, defaultValue int) int {
+	if envVal := os.Getenv(key); envVal != "" {
+		if val, err := strconv.Atoi(envVal); err == nil {
+			return val
+		}
+	}
+	return defaultValue
 }
 
 // HandleStreamingResponseWithConfig handles streaming responses with configurable architecture
@@ -92,11 +127,18 @@ func HandleStreamingResponseWithConfig(w *responseWriterWrapper, resp *http.Resp
 		config = DefaultStreamingConfig()
 	}
 
+	logger := logging.NewLogger()
+	
 	if config.EnableNewArchitecture {
-		logging.NewLogger().DebugLog("Using new streaming architecture")
+		logger.InfoLog("Using new streaming architecture (v2)")
 		handleStreamingResponseV2(w, resp, ctx)
 	} else {
-		logging.NewLogger().DebugLog("Using legacy streaming architecture")
+		logger.DebugLog("Using legacy streaming architecture (v1)")
 		handleStreamingResponse(w, resp, ctx)
 	}
+}
+
+// GetStreamingConfig returns the current streaming configuration (for monitoring/debugging)
+func GetStreamingConfig() *StreamingConfig {
+	return DefaultStreamingConfig()
 }

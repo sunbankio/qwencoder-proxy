@@ -243,7 +243,8 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: resp.StatusCode}
 
 	if isClientStreaming {
-		handleStreamingResponse(responseWriter, resp, r.Context())
+		// Use the new configurable streaming handler that can switch between architectures
+		HandleStreamingResponseWithConfig(responseWriter, resp, r.Context(), nil)
 	} else {
 		handleNonStreamingResponse(responseWriter, resp)
 	}
