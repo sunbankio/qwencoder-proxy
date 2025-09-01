@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"qwenproxy/logging"
+	"github.com/sunbankio/qwencoder-proxy/logging"
 )
 
 // OAuthCreds represents the structure of the qwenproxy_creds.json file
@@ -56,27 +56,27 @@ type DeviceAuthResponse struct {
 // SaveOAuthCreds saves OAuth credentials to the qwenproxy_creds.json file
 func SaveOAuthCreds(creds OAuthCreds) error {
 	credsPath := GetQwenCredentialsPath()
-	
+
 	// Create the directory if it doesn't exist
 	dir := filepath.Dir(credsPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create credentials directory: %v", err)
 	}
-	
+
 	// Create or overwrite the file
 	file, err := os.Create(credsPath)
 	if err != nil {
 		return fmt.Errorf("failed to create credentials file: %v", err)
 	}
 	defer file.Close()
-	
+
 	// Encode and write the credentials
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(creds); err != nil {
 		return fmt.Errorf("failed to encode credentials: %v", err)
 	}
-	
+
 	return nil
 }
 

@@ -24,6 +24,16 @@ Qwen Proxy is a Go-based proxy server that sits between your applications and Qw
 
 ## Installation
 
+### Option 1: Install via `go install` (Recommended)
+
+```bash
+go install github.com/sunbankio/qwencoder-proxy/cmd/qwencoder-proxy@latest
+```
+
+This will download, build, and install the `qwencoder-proxy` executable to your `$GOPATH/bin` directory.
+
+### Option 2: Build from source
+
 1. Clone the repository:
    ```bash
    git clone <repository-url>
@@ -52,6 +62,19 @@ The proxy can be configured using environment variables:
 
 ## Usage
 
+### If installed via `go install`:
+1. Ensure `$GOPATH/bin` is in your `$PATH`
+2. Start the proxy server:
+   ```bash
+   qwencoder-proxy
+   ```
+
+3. For debug mode:
+   ```bash
+   qwencoder-proxy -debug
+   ```
+
+### If built from source:
 1. Start the proxy server:
    ```bash
    ./qwencoder-proxy

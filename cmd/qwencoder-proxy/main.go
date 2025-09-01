@@ -1,18 +1,18 @@
 package main
 
 import (
-	"fmt"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 
-	"qwenproxy/auth"
-	"qwenproxy/config"
-	"qwenproxy/logging"
-	"qwenproxy/proxy"
-	"qwenproxy/qwenclient"
+	"github.com/sunbankio/qwencoder-proxy/auth"
+	"github.com/sunbankio/qwencoder-proxy/config"
+	"github.com/sunbankio/qwencoder-proxy/logging"
+	"github.com/sunbankio/qwencoder-proxy/proxy"
+	"github.com/sunbankio/qwencoder-proxy/qwenclient"
 )
 
 func main() {

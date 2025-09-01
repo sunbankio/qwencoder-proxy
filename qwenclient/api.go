@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"qwenproxy/auth"
+	"github.com/sunbankio/qwencoder-proxy/auth"
 )
 
 type NonStreamResponse struct {

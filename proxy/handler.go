@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"qwenproxy/logging"
-	"qwenproxy/qwenclient"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/sunbankio/qwencoder-proxy/logging"
+	"github.com/sunbankio/qwencoder-proxy/qwenclient"
 )
 
 // Model represents the structure of a model
@@ -305,21 +306,21 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 			// Extract JSON data from the full line
 			data := strings.TrimPrefix(line, "data: ")
 			data = strings.TrimRight(data, "\n")
-			
+
 			// Determine if stuttering continues
 			stillStuttering := stutteringProcess(buf, data)
 			if stillStuttering {
 				// Stuttering continues: update buffer with current data, suppress output
-				buf = data  // Buffer just the JSON data, not the full line
+				buf = data // Buffer just the JSON data, not the full line
 				logging.NewLogger().DebugLog("Stuttering: true, Buffering: %s", data)
 				continue
 			}
 			// Stuttering has resolved: flush buffered content then current content
-			fmt.Fprintf(w, "data: %s\n\n", buf)   // Flush buffered JSON data with proper formatting
-			fmt.Fprintf(w, "data: %s\n\n", data)  // Flush current JSON data with proper formatting
+			fmt.Fprintf(w, "data: %s\n\n", buf)  // Flush buffered JSON data with proper formatting
+			fmt.Fprintf(w, "data: %s\n\n", data) // Flush current JSON data with proper formatting
 			w.Flush()
 			logging.NewLogger().DebugLog("Stuttering Resolved: Flushed Buffered: %s, Flushed Current: %s", buf, data)
-			
+
 			stuttering = false // Stuttering has ended
 			buf = ""           // Clear buffer
 			continue           // Skip the general forwarding logic below
@@ -329,7 +330,7 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 			// For data lines, extract JSON and format properly
 			data := strings.TrimPrefix(line, "data: ")
 			data = strings.TrimRight(data, "\n")
-			
+
 			// Handle [DONE] message
 			if data == "[DONE]" {
 				fmt.Fprintf(w, "data: [DONE]\n\n")
@@ -337,7 +338,7 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 				logging.NewLogger().DebugLog("Received [DONE] message, stopping streaming.")
 				break
 			}
-			
+
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			logging.NewLogger().DebugLog("Forwarding data line: %s", data)
 		} else {

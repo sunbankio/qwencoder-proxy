@@ -2,8 +2,9 @@ package proxy
 
 import (
 	"net/http"
-	"qwenproxy/config"
-	"qwenproxy/logging"
+
+	"github.com/sunbankio/qwencoder-proxy/config"
+	"github.com/sunbankio/qwencoder-proxy/logging"
 )
 
 // SharedHTTPClient is the shared HTTP client with connection pooling and timeouts
