@@ -85,11 +85,13 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	logging.NewLogger().DebugLog("Upstream Response Headers: %v", resp.Header)
 
 	if isClientStreaming {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Cache-Control")
+		// Copy all headers from the upstream response to the client response,
+		// deferring to the upstream service to set correct streaming headers.
+		for name, values := range resp.Header {
+			for _, value := range values {
+				w.Header().Add(name, value)
+			}
+		}
 		w.WriteHeader(resp.StatusCode)
 
 		reader := bufio.NewReader(resp.Body)
@@ -120,20 +122,35 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 				}
 
 				if stuttering {
-					// Process the chunk for stuttering control
-					processedOutput, newStuttering, newBuf, err := stutteringProcess(stuttering, buf, data)
+					// Determine if stuttering continues
+					stillStuttering, err := stutteringProcess(buf, data)
 					if err != nil {
 						logging.NewLogger().ErrorLog("Error in stutteringProcess: %v", err)
-						// If an error occurs, send the original data to prevent blocking
+						// If an error occurs, send the current data and stop stuttering
 						fmt.Fprintf(w, "data: %s\n\n", data)
+						if flusher, ok := w.(http.Flusher); ok {
+							flusher.Flush()
+						}
+						stuttering = false // Stop stuttering on error
+						buf = ""           // Clear buffer
 					} else {
-						stuttering = newStuttering
-						buf = newBuf
-						if processedOutput != "" {
-							fmt.Fprintf(w, "%s", processedOutput)
+						if stillStuttering {
+							// Stuttering continues: update buffer with current data, suppress output
+							buf = data
+						} else {
+							// Stuttering has resolved: flush buffered content then current content
+							// buf now holds the JSON string of the first complete chunk
+							// data is the JSON string of the current chunk
+							fmt.Fprintf(w, "data: %s\n\n", buf) // Flush buffered
 							if flusher, ok := w.(http.Flusher); ok {
 								flusher.Flush()
 							}
+							fmt.Fprintf(w, "data: %s\n\n", data) // Flush current
+							if flusher, ok := w.(http.Flusher); ok {
+								flusher.Flush()
+							}
+							stuttering = false // Stuttering has ended
+							buf = ""           // Clear buffer
 						}
 					}
 				} else {
@@ -201,52 +218,41 @@ func SetProxyHeaders(req *http.Request, accessToken string) {
 	req.Header.Set("X-DashScope-AuthType", "qwen-oauth")
 }
 
-func stutteringProcess(stuttering bool, buf string, currentChunkData string) (string, bool, string, error) {
-	// currentChunkData is the string after "data: " prefix and without trailing newline
-
-	if !stuttering {
-		// This branch should ideally not be hit if ProxyHandler manages `stuttering` correctly,
-		// but as a fallback, if stuttering is false, just return the chunk.
-		return "data: " + currentChunkData + "\n\n", stuttering, buf, nil
-	}
-
+// stutteringProcess determines if stuttering is still occurring.
+// It assumes stuttering is active when called by ProxyHandler.
+// Returns:
+//   - true if stuttering continues (meaning the current chunk should be buffered and suppressed).
+//   - false if stuttering has resolved (meaning the buffered content and current chunk should be flushed).
+//   - err: Any error encountered during processing.
+func stutteringProcess(buf string, currentChunkData string) (bool, error) {
 	rawCurrentChunk := chunkToJson(currentChunkData)
 	if rawCurrentChunk == nil {
-		// If current chunk is malformed/uninteresting, treat it as a non-stuttering chunk
-		// and forward it, but don't update buffer or change stuttering state based on it.
-		// This also ensures [DONE] messages are passed through.
-		return "data: " + currentChunkData + "\n\n", stuttering, buf, nil
+		// If current chunk is malformed/uninteresting, consider stuttering resolved for this path,
+		// allowing the main handler to decide how to proceed (e.g., just forward).
+		return false, nil
 	}
 	extractedCurrentContent := extractDeltaContent(rawCurrentChunk)
 
-	if buf == "" { // This is the first content chunk
-		buf = currentChunkData
-		return "", stuttering, buf, nil // Suppress the first content chunk
+	if buf == "" {
+		// This is the very first content chunk, so we consider it part of the stuttering.
+		// It will be stored in 'buf' by the calling ProxyHandler.
+		return true, nil // Still stuttering
 	}
 
-	// 'buf' now holds the JSON string of the first chunk
+	// 'buf' now holds the full original JSON string of the previously buffered chunk.
 	rawBufferedChunk := chunkToJson(buf)
 	if rawBufferedChunk == nil {
-		// If buffered chunk is malformed, just send current and stop stuttering
-		stuttering = false
-		return "data: " + currentChunkData + "\n\n", stuttering, "", nil
+		// If buffered chunk is malformed, stuttering cannot be determined.
+		// Consider stuttering resolved to avoid blocking.
+		return false, nil
 	}
 	extractedBufferedContent := extractDeltaContent(rawBufferedChunk)
 
+	// Check if current content is a continuation (prefix relationship) of the buffered content.
 	if hasPrefixRelationship(extractedCurrentContent, extractedBufferedContent) {
-		// Still stuttering, current content is a prefix of buffered content, or vice-versa
-		buf = currentChunkData // Update buffer with the latest, longer content
-		return "", stuttering, buf, nil // Suppress current chunk
+		return true, nil // Still stuttering
 	} else {
-		// Stuttering has ended. Send the original buffered chunk, then the current chunk.
-		stuttering = false
-
-		// The stored `buf` is already the full JSON string of the first chunk.
-		// The `currentChunkData` is the full JSON string of the second chunk.
-
-		// Concatenate "data: " + buffered chunk (original) + "\n\n" + "data: " + current chunk (original) + "\n\n"
-		output := "data: " + buf + "\n\ndata: " + currentChunkData + "\n\n"
-		return output, stuttering, "", nil // Clear buf after sending
+		return false, nil // Stuttering has resolved
 	}
 }
 
