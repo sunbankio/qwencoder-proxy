@@ -14,7 +14,7 @@ import (
 // handleStreamingResponse processes streaming responses using the refactored architecture
 func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx context.Context) {
 	logger := logging.NewLogger()
-	
+
 	// Copy all headers from the upstream response to the client response,
 	// deferring to the upstream service to set correct streaming headers.
 	for name, values := range resp.Header {
@@ -46,10 +46,10 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 				logger.DebugLog("Client disconnected, stopping stream processing")
 				return
 			}
-			
+
 			// For other errors, log and continue processing if possible
 			logger.ErrorLog("Error processing stream line: %v", err)
-			
+
 			// If the processor is in terminating state, break the loop
 			if processor.state.Current == StateTerminating {
 				break
@@ -97,10 +97,6 @@ func getEnvInt(key string, defaultValue int) int {
 
 // HandleStreamingResponse handles streaming responses with the new architecture
 func HandleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx context.Context) {
-	logger := logging.NewLogger()
-	
-	// Always use the new streaming architecture
-	logger.InfoLog("Using new streaming architecture")
 	handleStreamingResponse(w, resp, ctx)
 }
 

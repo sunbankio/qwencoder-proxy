@@ -107,7 +107,7 @@ func (l *Logger) InfoLog(format string, v ...interface{}) {
 
 // ProxyRequestLog logs proxy request information in a simplified format
 func (l *Logger) ProxyRequestLog(clientIP, method, path, userAgent string, reqSize int, isStream bool, upstreamStatus, clientStatus int, respSize int, durationMs int64) {
-	l.Printf("%s %s %s | User-Agent: %s | ReqSize: %d | Stream: %t | Upstream: %d | Client: %d | RespSize: %d | Duration: %dms",
+	l.InfoLog("%s %s %s | User-Agent: %s | ReqSize: %d | Stream: %t | Upstream: %d | Client: %d | RespSize: %d | Duration: %dms",
 		clientIP,
 		method,
 		path,
