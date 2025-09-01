@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,10 +16,8 @@ import (
 	"qwenproxy/qwenclient"
 )
 
-// ProxyHandler handles incoming requests and proxies them to the target endpoint
-func ProxyHandler(w http.ResponseWriter, r *http.Request) {
-	logging.NewLogger().DebugLog("Incoming Request Content-Length: %d", r.ContentLength)
-
+// readRequestBody reads the request body and handles errors
+func readRequestBody(w http.ResponseWriter, r *http.Request) []byte {
 	var requestBodyBytes []byte
 	if r.Body != nil {
 		var err error
@@ -26,34 +25,37 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			logging.NewLogger().ErrorLog("Failed to read request body: %v", err)
 			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
-			return
+			return nil
 		}
 		r.Body = io.NopCloser(bytes.NewBuffer(requestBodyBytes))
 	}
-	logging.NewLogger().DebugLog("Request Body: %s", string(requestBodyBytes))
+	return requestBodyBytes
+}
 
-	accessToken, targetEndpoint, err := qwenclient.GetValidTokenAndEndpoint()
-	if err != nil {
-		errorMsg := err.Error()
-		if strings.Contains(errorMsg, "credentials not found") || strings.Contains(errorMsg, "failed to refresh token") {
-			http.Error(w, fmt.Sprintf("Authentication required: %v. Please restart the proxy to re-authenticate.", err), http.StatusUnauthorized)
-			return
-		}
-		http.Error(w, fmt.Sprintf("Failed to get valid token: %v", err), http.StatusInternalServerError)
+// handleAuthError handles authentication errors with appropriate HTTP responses
+func handleAuthError(w http.ResponseWriter, err error) {
+	errorMsg := err.Error()
+	if strings.Contains(errorMsg, "credentials not found") || strings.Contains(errorMsg, "failed to refresh token") {
+		http.Error(w, fmt.Sprintf("Authentication required: %v. Please restart the proxy to re-authenticate.", err), http.StatusUnauthorized)
 		return
 	}
+	http.Error(w, fmt.Sprintf("Failed to get valid token: %v", err), http.StatusInternalServerError)
+}
 
-	// Construct the targetURL, handling potential duplicate /v1
-	requestPath := r.URL.Path
+// constructTargetURL builds the target URL, handling potential duplicate /v1 paths
+func constructTargetURL(requestPath, targetEndpoint string) string {
 	if strings.HasPrefix(requestPath, "/v1") && strings.HasSuffix(targetEndpoint, "/v1") {
 		requestPath = strings.TrimPrefix(requestPath, "/v1")
 	}
-	targetURL := targetEndpoint + requestPath
+	return targetEndpoint + requestPath
+}
 
-	var requestJSON map[string]interface{}
+// checkIfStreaming determines if the request is a streaming request
+func checkIfStreaming(requestBodyBytes []byte) bool {
 	isClientStreaming := false
 	if len(requestBodyBytes) > 0 {
-		err = json.Unmarshal(requestBodyBytes, &requestJSON)
+		var requestJSON map[string]interface{}
+		err := json.Unmarshal(requestBodyBytes, &requestJSON)
 		if err == nil {
 			if streamVal, ok := requestJSON["stream"].(bool); ok && streamVal {
 				isClientStreaming = true
@@ -63,6 +65,28 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	logging.NewLogger().DebugLog("isClientStreaming evaluated to: %t", isClientStreaming)
+	return isClientStreaming
+}
+
+// ProxyHandler handles incoming requests and proxies them to the target endpoint
+func ProxyHandler(w http.ResponseWriter, r *http.Request) {
+	logging.NewLogger().DebugLog("Incoming Request Content-Length: %d", r.ContentLength)
+
+	requestBodyBytes := readRequestBody(w, r)
+	if requestBodyBytes == nil {
+		return // Error already handled
+	}
+	logging.NewLogger().DebugLog("Request Body: %s", string(requestBodyBytes))
+
+	accessToken, targetEndpoint, err := qwenclient.GetValidTokenAndEndpoint()
+	if err != nil {
+		handleAuthError(w, err)
+		return
+	}
+
+	targetURL := constructTargetURL(r.URL.Path, targetEndpoint)
+
+	isClientStreaming := checkIfStreaming(requestBodyBytes)
 
 	req, err := http.NewRequest(r.Method, targetURL, bytes.NewBuffer(requestBodyBytes))
 	if err != nil {
@@ -74,7 +98,18 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	client := SharedHTTPClient
 
-	resp, err := client.Do(req)
+	// Create a context that can be cancelled when client disconnects
+	ctx := r.Context()
+	resp, err := client.Do(req.WithContext(ctx))
+	if err != nil {
+		// Check if the error is due to client disconnection
+		if ctx.Err() == context.Canceled {
+			logging.NewLogger().DebugLog("Client disconnected, cancelling upstream request")
+			return
+		}
+		http.Error(w, fmt.Sprintf("Failed to send request to target endpoint: %v", err), http.StatusInternalServerError)
+		return
+	}
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to send request to target endpoint: %v", err), http.StatusInternalServerError)
 		return
@@ -85,99 +120,117 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	logging.NewLogger().DebugLog("Upstream Response Headers: %v", resp.Header)
 
 	if isClientStreaming {
-		// Copy all headers from the upstream response to the client response,
-		// deferring to the upstream service to set correct streaming headers.
-		for name, values := range resp.Header {
-			for _, value := range values {
-				w.Header().Add(name, value)
-			}
+		handleStreamingResponse(w, resp, r.Context())
+	} else {
+		handleNonStreamingResponse(w, resp)
+	}
+}
+
+// handleStreamingResponse processes streaming responses with stuttering logic and connection cancellation
+func handleStreamingResponse(w http.ResponseWriter, resp *http.Response, ctx context.Context) {
+	// Copy all headers from the upstream response to the client response,
+	// deferring to the upstream service to set correct streaming headers.
+	for name, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(name, value)
 		}
-		w.WriteHeader(resp.StatusCode)
+	}
+	w.WriteHeader(resp.StatusCode)
 
-		reader := bufio.NewReader(resp.Body)
-		stuttering := true
-		buf := "" // Buffered content for stuttering control
+	reader := bufio.NewReader(resp.Body)
+	stuttering := true
+	buf := "" // Buffered content for stuttering control
 
-		for {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				if err != io.EOF {
-					logging.NewLogger().ErrorLog("Error reading from upstream: %v", err)
+	for {
+		// Check if client has disconnected
+		select {
+		case <-ctx.Done():
+			logging.NewLogger().DebugLog("Client disconnected during streaming, stopping response")
+			return
+		default:
+		}
+
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				logging.NewLogger().ErrorLog("Error reading from upstream: %v", err)
+			}
+			break
+		}
+		logging.NewLogger().DebugLog("Raw upstream line: %s", strings.TrimSpace(line))
+
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			data = strings.TrimRight(data, "\n")
+			logging.NewLogger().DebugLog("Extracted data part: %s", data)
+
+			if data == "[DONE]" {
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
 				}
 				break
 			}
-			logging.NewLogger().DebugLog("Raw upstream line: %s", strings.TrimSpace(line))
 
-			if strings.HasPrefix(line, "data: ") {
-				data := strings.TrimPrefix(line, "data: ")
-				data = strings.TrimRight(data, "\n")
-				logging.NewLogger().DebugLog("Extracted data part: %s", data)
-
-				if data == "[DONE]" {
-					fmt.Fprintf(w, "data: [DONE]\n\n")
-					if flusher, ok := w.(http.Flusher); ok {
-						flusher.Flush()
-					}
-					break
-				}
-
-				if stuttering {
-					// Determine if stuttering continues
-					stillStuttering, err := stutteringProcess(buf, data)
-					if err != nil {
-						logging.NewLogger().ErrorLog("Error in stutteringProcess: %v", err)
-						// If an error occurs, send the current data and stop stuttering
-						fmt.Fprintf(w, "data: %s\n\n", data)
-						if flusher, ok := w.(http.Flusher); ok {
-							flusher.Flush()
-						}
-						stuttering = false // Stop stuttering on error
-						buf = ""           // Clear buffer
-					} else {
-						if stillStuttering {
-							// Stuttering continues: update buffer with current data, suppress output
-							buf = data
-						} else {
-							// Stuttering has resolved: flush buffered content then current content
-							// buf now holds the JSON string of the first complete chunk
-							// data is the JSON string of the current chunk
-							fmt.Fprintf(w, "data: %s\n\n", buf) // Flush buffered
-							if flusher, ok := w.(http.Flusher); ok {
-								flusher.Flush()
-							}
-							fmt.Fprintf(w, "data: %s\n\n", data) // Flush current
-							if flusher, ok := w.(http.Flusher); ok {
-								flusher.Flush()
-							}
-							stuttering = false // Stuttering has ended
-							buf = ""           // Clear buffer
-						}
-					}
-				} else {
-					// If not stuttering, just forward the data directly
+			if stuttering {
+				// Determine if stuttering continues
+				stillStuttering, err := stutteringProcess(buf, data)
+				if err != nil {
+					logging.NewLogger().ErrorLog("Error in stutteringProcess: %v", err)
+					// If an error occurs, send the current data and stop stuttering
 					fmt.Fprintf(w, "data: %s\n\n", data)
 					if flusher, ok := w.(http.Flusher); ok {
 						flusher.Flush()
 					}
+					stuttering = false // Stop stuttering on error
+					buf = ""           // Clear buffer
+				} else {
+					if stillStuttering {
+						// Stuttering continues: update buffer with current data, suppress output
+						buf = data
+					} else {
+						// Stuttering has resolved: flush buffered content then current content
+						// buf now holds the JSON string of the first complete chunk
+						// data is the JSON string of the current chunk
+						fmt.Fprintf(w, "data: %s\n\n", buf) // Flush buffered
+						if flusher, ok := w.(http.Flusher); ok {
+							flusher.Flush()
+						}
+						fmt.Fprintf(w, "data: %s\n\n", data) // Flush current
+						if flusher, ok := w.(http.Flusher); ok {
+							flusher.Flush()
+						}
+						stuttering = false // Stuttering has ended
+						buf = ""           // Clear buffer
+					}
 				}
-			} else { // Handle non-data lines (event, :, empty)
-				logging.NewLogger().DebugLog("Non-data line: %s", strings.TrimSpace(line))
-				fmt.Fprintf(w, "%s", line)
+			} else {
+				// If not stuttering, just forward the data directly
+				fmt.Fprintf(w, "data: %s\n\n", data)
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
 			}
-		}
-	} else {
-		logging.NewLogger().DebugLog("Not a streaming request, copying body directly.")
-		for name, values := range resp.Header {
-			for _, value := range values {
-				w.Header().Add(name, value)
+		} else { // Handle non-data lines (event, :, empty)
+			logging.NewLogger().DebugLog("Non-data line: %s", strings.TrimSpace(line))
+			fmt.Fprintf(w, "%s", line)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
 			}
 		}
-		if _, err := io.Copy(w, resp.Body); err != nil {
-			logging.NewLogger().ErrorLog("Error copying response body: %v", err)
+	}
+}
+
+// handleNonStreamingResponse processes non-streaming responses
+func handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) {
+	logging.NewLogger().DebugLog("Not a streaming request, copying body directly.")
+	for name, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(name, value)
 		}
+	}
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		logging.NewLogger().ErrorLog("Error copying response body: %v", err)
 	}
 }
 
