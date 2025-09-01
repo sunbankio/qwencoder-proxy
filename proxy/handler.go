@@ -8,13 +8,56 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"runtime"
 	"strings"
 
 	"qwenproxy/logging"
 	"qwenproxy/qwenclient"
 )
+
+// Model represents the structure of a model
+type Model struct {
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	ContextLength       int      `json:"context_length"`
+	Architecture        Arch     `json:"architecture"`
+	Pricing             Price    `json:"pricing"`
+	TopProvider         Provider `json:"top_provider"`
+	PerRequestLimits    *string  `json:"per_request_limits"`
+	SupportedParameters []string `json:"supported_parameters"`
+}
+
+// Arch represents the architecture section of a model
+type Arch struct {
+	Modality         string   `json:"modality"`
+	InputModalities  []string `json:"input_modalities"`
+	OutputModalities []string `json:"output_modalities"`
+	Tokenizer        string   `json:"tokenizer"`
+	InstructType     *string  `json:"instruct_type"`
+}
+
+// Price represents the pricing section of a model
+type Price struct {
+	Prompt            string `json:"prompt"`
+	Completion        string `json:"completion"`
+	Request           string `json:"request"`
+	Image             string `json:"image"`
+	WebSearch         string `json:"web_search"`
+	InternalReasoning string `json:"internal_reasoning"`
+}
+
+// Provider represents the top_provider section of a model
+type Provider struct {
+	ContextLength       int  `json:"context_length"`
+	MaxCompletionTokens *int `json:"max_completion_tokens"`
+	IsModerated         bool `json:"is_moderated"`
+}
+
+// ModelsResponse represents the overall structure of the models response
+type ModelsResponse struct {
+	Object string  `json:"object"`
+	Data   []Model `json:"data"`
+}
 
 // readRequestBody reads the request body and handles errors
 func readRequestBody(w http.ResponseWriter, r *http.Request) []byte {
@@ -110,10 +153,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to send request to target endpoint: %v", err), http.StatusInternalServerError)
 		return
 	}
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to send request to target endpoint: %v", err), http.StatusInternalServerError)
-		return
-	}
+
 	defer resp.Body.Close()
 
 	logging.NewLogger().DebugLog("Upstream Response Status: %s", resp.Status)
@@ -234,15 +274,69 @@ func handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response) {
 	}
 }
 
-// ModelsHandler handles requests to /v1/models and serves the models.json file
+// ModelsHandler handles requests to /v1/models and returns the model data directly
 func ModelsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	logging.NewLogger().DebugLog("ModelsHandler received request")
-	modelsData, err := os.ReadFile("models.json")
+
+	// Create the model response directly in code
+	modelsResponse := ModelsResponse{
+		Object: "list",
+		Data: []Model{
+			{
+				ID:            "qwen3-coder-plus",
+				Name:          "Qwen: Qwen3 Coder ",
+				ContextLength: 262144,
+				Architecture: Arch{
+					Modality:         "text->text",
+					InputModalities:  []string{"text"},
+					OutputModalities: []string{"text"},
+					Tokenizer:        "Qwen3",
+					InstructType:     nil,
+				},
+				Pricing: Price{
+					Prompt:            "0.0000002",
+					Completion:        "0.0000008",
+					Request:           "0",
+					Image:             "0",
+					WebSearch:         "0",
+					InternalReasoning: "0",
+				},
+				TopProvider: Provider{
+					ContextLength:       262144,
+					MaxCompletionTokens: nil,
+					IsModerated:         false,
+				},
+				PerRequestLimits: nil,
+				SupportedParameters: []string{
+					"frequency_penalty",
+					"logit_bias",
+					"logprobs",
+					"max_tokens",
+					"min_p",
+					"presence_penalty",
+					"repetition_penalty",
+					"response_format",
+					"seed",
+					"stop",
+					"structured_outputs",
+					"temperature",
+					"tool_choice",
+					"tools",
+					"top_k",
+					"top_logprobs",
+					"top_p",
+				},
+			},
+		},
+	}
+
+	// Marshal the response to JSON
+	modelsData, err := json.Marshal(modelsResponse)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to read models.json: %v", err), http.StatusInternalServerError)
-		logging.NewLogger().ErrorLog("Failed to read models.json: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to marshal models data: %v", err), http.StatusInternalServerError)
+		logging.NewLogger().ErrorLog("Failed to marshal models data: %v", err)
 		return
 	}
 
@@ -319,10 +413,6 @@ func hasPrefixRelationship(a, b string) bool {
 func extractDeltaContent(raw map[string]interface{}) string {
 	// it's safe to do this, because raw is validated in chunkToJson
 	return raw["choices"].([]interface{})[0].(map[string]interface{})["delta"].(map[string]interface{})["content"].(string)
-}
-
-func prependDeltaContent(buf string, raw map[string]interface{}) (string, error) { // This function is no longer needed with the new approach
-	return "", nil
 }
 
 func chunkToJson(chunk string) map[string]interface{} {
