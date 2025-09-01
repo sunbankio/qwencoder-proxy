@@ -142,7 +142,7 @@ func checkIfStreaming(requestBodyBytes []byte) bool {
 // ProxyHandler handles incoming requests and proxies them to the target endpoint
 func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
-	
+
 	// Get client IP
 	clientIP := r.RemoteAddr
 	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
@@ -201,15 +201,15 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 				r.URL.Path,
 				len(requestBodyBytes),
 				isClientStreaming,
-				0, // upstream status (0 indicates error)
+				0,   // upstream status (0 indicates error)
 				499, // client status (499 = Client Closed Request)
-				0, // response size
+				0,   // response size
 				duration,
 			)
 			return
 		}
 		http.Error(w, fmt.Sprintf("Failed to send request to target endpoint: %v", err), http.StatusInternalServerError)
-		
+
 		// Log the request with error information
 		duration := time.Since(startTime).Milliseconds()
 		logging.NewLogger().ProxyRequestLog(
@@ -218,9 +218,9 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 			r.URL.Path,
 			len(requestBodyBytes),
 			isClientStreaming,
-			0, // upstream status (0 indicates error)
+			0,   // upstream status (0 indicates error)
 			500, // client status
-			0, // response size
+			0,   // response size
 			duration,
 		)
 		return
@@ -230,7 +230,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Create a response writer wrapper to capture response size
 	responseWriter := &responseWriterWrapper{ResponseWriter: w, statusCode: resp.StatusCode}
-	
+
 	if isClientStreaming {
 		handleStreamingResponse(responseWriter, resp, r.Context())
 	} else {
@@ -245,9 +245,9 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path,
 		len(requestBodyBytes),
 		isClientStreaming,
-		resp.StatusCode, // upstream status
+		resp.StatusCode,           // upstream status
 		responseWriter.statusCode, // client status
-		responseWriter.size, // response size
+		responseWriter.size,       // response size
 		duration,
 	)
 }
@@ -284,6 +284,11 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 			break
 		}
 		logging.NewLogger().DebugLog("Raw upstream line: %s", strings.TrimSpace(line))
+
+		// If the line is empty or only contains whitespace, skip it.
+		if len(strings.TrimSpace(line)) == 0 {
+			continue
+		}
 
 		if stuttering && strings.HasPrefix(line, "data: ") {
 			// Determine if stuttering continues
