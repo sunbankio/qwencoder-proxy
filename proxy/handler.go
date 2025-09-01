@@ -315,24 +315,7 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 			data = strings.TrimRight(data, "\n")
 			
 			// Determine if stuttering continues
-			stillStuttering, stutterErr := stutteringProcess(buf, data)
-
-			if stutterErr != nil {
-				logging.NewLogger().ErrorLog("Error in stutteringProcess: %v", stutterErr)
-				// If an error occurs, send the current data and stop stuttering
-				fmt.Fprintf(w, "data: %s\n\n", data)
-				w.Flush()
-				stuttering = false // Stop stuttering on error
-				buf = ""           // Clear buffer
-				
-				// Deep debug logging
-				if *deepDebug && debugFile != nil {
-					debugFile.WriteString(fmt.Sprintf("[ERROR] Stuttering process error: %v\n", stutterErr))
-					debugFile.WriteString(fmt.Sprintf("[ERROR] Sending current data: data: %s\n\n", data))
-					debugFile.Sync()
-				}
-				continue
-			}
+			stillStuttering := stutteringProcess(buf, data)
 			if stillStuttering {
 				// Stuttering continues: update buffer with current data, suppress output
 				buf = data  // Buffer just the JSON data, not the full line
@@ -506,20 +489,19 @@ func SetProxyHeaders(req *http.Request, accessToken string) {
 // Returns:
 //   - true if stuttering continues (meaning the current chunk should be buffered and suppressed).
 //   - false if stuttering has resolved (meaning the buffered content and current chunk should be flushed).
-//   - err: Any error encountered during processing.
-func stutteringProcess(buf string, currentChunkData string) (bool, error) {
+func stutteringProcess(buf string, currentChunkData string) bool {
 	rawCurrentChunk := chunkToJson(currentChunkData)
 	if rawCurrentChunk == nil {
 		// If current chunk is malformed/uninteresting, consider stuttering resolved for this path,
 		// allowing the main handler to decide how to proceed (e.g., just forward).
-		return false, nil
+		return false
 	}
 	extractedCurrentContent := extractDeltaContent(rawCurrentChunk)
 
 	if buf == "" {
 		// This is the very first content chunk, so we consider it part of the stuttering.
 		// It will be stored in 'buf' by the calling ProxyHandler.
-		return true, nil // Still stuttering
+		return true // Still stuttering
 	}
 
 	// 'buf' now holds the JSON string of the previously buffered chunk.
@@ -527,15 +509,15 @@ func stutteringProcess(buf string, currentChunkData string) (bool, error) {
 	if rawBufferedChunk == nil {
 		// If buffered chunk is malformed, stuttering cannot be determined.
 		// Consider stuttering resolved to avoid blocking.
-		return false, nil
+		return false
 	}
 	extractedBufferedContent := extractDeltaContent(rawBufferedChunk)
 
 	// Check if current content is a continuation (prefix relationship) of the buffered content.
 	if hasPrefixRelationship(extractedCurrentContent, extractedBufferedContent) {
-		return true, nil // Still stuttering
+		return true // Still stuttering
 	} else {
-		return false, nil // Stuttering has resolved
+		return false // Stuttering has resolved
 	}
 }
 
