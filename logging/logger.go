@@ -98,3 +98,9 @@ func (l *Logger) DebugRawLog(format string, v ...interface{}) {
 		l.Printf("%s%s", Dim, message)
 	}
 }
+
+// InfoLog logs informational messages with white color
+func (l *Logger) InfoLog(format string, v ...interface{}) {
+	message := fmt.Sprintf(format, v...)
+	l.Printf("%sℹ️  [INFO] %s%s", White, Reset, message)
+}

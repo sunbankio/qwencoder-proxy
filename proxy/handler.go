@@ -114,6 +114,15 @@ func checkIfStreaming(requestBodyBytes []byte) bool {
 // ProxyHandler handles incoming requests and proxies them to the target endpoint
 func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	logging.NewLogger().DebugLog("Incoming Request Content-Length: %d", r.ContentLength)
+	
+	// Log client request headers as info
+	logger := logging.NewLogger()
+	logger.InfoLog("Client Request Headers:")
+	for name, values := range r.Header {
+		for _, value := range values {
+			logger.InfoLog("  %s: %s", name, value)
+		}
+	}
 
 	requestBodyBytes := readRequestBody(w, r)
 	if requestBodyBytes == nil {
