@@ -21,8 +21,6 @@ type Model struct {
 	Name                string   `json:"name"`
 	ContextLength       int      `json:"context_length"`
 	Architecture        Arch     `json:"architecture"`
-	Pricing             Price    `json:"pricing"`
-	TopProvider         Provider `json:"top_provider"`
 	PerRequestLimits    *string  `json:"per_request_limits"`
 	SupportedParameters []string `json:"supported_parameters"`
 }
@@ -34,23 +32,6 @@ type Arch struct {
 	OutputModalities []string `json:"output_modalities"`
 	Tokenizer        string   `json:"tokenizer"`
 	InstructType     *string  `json:"instruct_type"`
-}
-
-// Price represents the pricing section of a model
-type Price struct {
-	Prompt            string `json:"prompt"`
-	Completion        string `json:"completion"`
-	Request           string `json:"request"`
-	Image             string `json:"image"`
-	WebSearch         string `json:"web_search"`
-	InternalReasoning string `json:"internal_reasoning"`
-}
-
-// Provider represents the top_provider section of a model
-type Provider struct {
-	ContextLength       int  `json:"context_length"`
-	MaxCompletionTokens *int `json:"max_completion_tokens"`
-	IsModerated         bool `json:"is_moderated"`
 }
 
 // ModelsResponse represents the overall structure of the models response
@@ -153,6 +134,17 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Log incoming request details
 	logging.NewLogger().DebugLog("Incoming Request: Method=%s URL=%s Content-Length=%d ClientIP=%s User-Agent=%s", r.Method, r.URL.Path, r.ContentLength, clientIP, userAgent)
+
+	// Handle CORS preflight OPTIONS requests
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-DashScope-CacheControl, X-DashScope-UserAgent, X-DashScope-AuthType")
+		w.Header().Set("Access-Control-Max-Age", "3600")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
 		clientIP = ip
 	} else if ip := r.Header.Get("X-Real-IP"); ip != "" {
@@ -164,6 +156,9 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return // Error already handled
 	}
 
+	// Add debug log for raw request body
+	logging.NewLogger().DebugLog("Raw request body: %s", string(requestBodyBytes))
+
 	// Check if streaming is enabled
 	isClientStreaming := checkIfStreaming(requestBodyBytes)
 
@@ -172,6 +167,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		handleAuthError(w, err)
 		return
 	}
+	requestBodyBytes = updateModel(requestBodyBytes)
 
 	targetURL := constructTargetURL(r.URL.Path, targetEndpoint)
 
@@ -280,7 +276,7 @@ func ModelsHandler(w http.ResponseWriter, r *http.Request) {
 			{
 				ID:            "qwen3-coder-plus",
 				Name:          "Qwen: Qwen3 Coder ",
-				ContextLength: 262144,
+				ContextLength: 1048576,
 				Architecture: Arch{
 					Modality:         "text->text",
 					InputModalities:  []string{"text"},
@@ -288,18 +284,37 @@ func ModelsHandler(w http.ResponseWriter, r *http.Request) {
 					Tokenizer:        "Qwen3",
 					InstructType:     nil,
 				},
-				Pricing: Price{
-					Prompt:            "0.0000002",
-					Completion:        "0.0000008",
-					Request:           "0",
-					Image:             "0",
-					WebSearch:         "0",
-					InternalReasoning: "0",
+				PerRequestLimits: nil,
+				SupportedParameters: []string{
+					"frequency_penalty",
+					"logit_bias",
+					"logprobs",
+					"max_tokens",
+					"min_p",
+					"presence_penalty",
+					"repetition_penalty",
+					"response_format",
+					"seed",
+					"stop",
+					"structured_outputs",
+					"temperature",
+					"tool_choice",
+					"tools",
+					"top_k",
+					"top_logprobs",
+					"top_p",
 				},
-				TopProvider: Provider{
-					ContextLength:       262144,
-					MaxCompletionTokens: nil,
-					IsModerated:         false,
+			},
+			{
+				ID:            "qwen3-coder-turbo",
+				Name:          "Qwen: Qwen3 Coder Turbo",
+				ContextLength: 262144,
+				Architecture: Arch{
+					Modality:         "text->text",
+					InputModalities:  []string{"text"},
+					OutputModalities: []string{"text"},
+					Tokenizer:        "Qwen3",
+					InstructType:     nil,
 				},
 				PerRequestLimits: nil,
 				SupportedParameters: []string{
@@ -347,8 +362,8 @@ func SetProxyHeaders(req *http.Request, accessToken string) {
 	// Set only the headers that the proxy explicitly defines
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json") // Always JSON for body
-	req.Header.Set("User-Agent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH))
+	req.Header.Set("User-Agent", fmt.Sprintf("QwenCode/0.0.10 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 	req.Header.Set("X-DashScope-CacheControl", "enable")
-	req.Header.Set("X-DashScope-UserAgent", fmt.Sprintf("QwenCode/0.0.9 (%s; %s)", runtime.GOOS, runtime.GOARCH))
+	req.Header.Set("X-DashScope-UserAgent", fmt.Sprintf("QwenCode/0.0.10 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 	req.Header.Set("X-DashScope-AuthType", "qwen-oauth")
 }
