@@ -107,15 +107,30 @@ func (l *Logger) InfoLog(format string, v ...interface{}) {
 
 // ProxyRequestLog logs proxy request information in a simplified format
 func (l *Logger) ProxyRequestLog(clientIP, method, path, userAgent string, reqSize int, isStream bool, upstreamStatus, clientStatus int, respSize int, durationMs int64) {
-	l.InfoLog("%s %s %s | User-Agent: %s | ReqSize: %d | Stream: %t | Upstream: %d | Client: %d | RespSize: %d | Duration: %dms",
-		clientIP,
-		method,
-		path,
-		userAgent,
-		reqSize,
-		isStream,
-		upstreamStatus,
-		clientStatus,
-		respSize,
-		durationMs)
+	// Use WarningLog when upstreamStatus and clientStatus are not both 200
+	if upstreamStatus != 200 || clientStatus != 200 {
+		l.WarningLog("%s %s %s | User-Agent: %s | ReqSize: %d | Stream: %t | Upstream: %d | Client: %d | RespSize: %d | Duration: %dms",
+			clientIP,
+			method,
+			path,
+			userAgent,
+			reqSize,
+			isStream,
+			upstreamStatus,
+			clientStatus,
+			respSize,
+			durationMs)
+	} else {
+		l.InfoLog("%s %s %s | User-Agent: %s | ReqSize: %d | Stream: %t | Upstream: %d | Client: %d | RespSize: %d | Duration: %dms",
+			clientIP,
+			method,
+			path,
+			userAgent,
+			reqSize,
+			isStream,
+			upstreamStatus,
+			clientStatus,
+			respSize,
+			durationMs)
+	}
 }
