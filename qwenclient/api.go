@@ -4,12 +4,20 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"github.com/sunbankio/qwencoder-proxy/auth"
 )
 
+var (
+	tokenMutex sync.Mutex
+)
+
 // GetValidTokenAndEndpoint gets a valid token and determines the correct endpoint
 func GetValidTokenAndEndpoint() (string, string, error) {
+	tokenMutex.Lock()
+	defer tokenMutex.Unlock()
+
 	credentials, err := auth.LoadQwenCredentials()
 	if err != nil {
 		// If credentials file doesn't exist, return a special error that can be handled by the caller

@@ -7,4 +7,5 @@ const (
 	QwenOAuthTokenURL       = "https://chat.qwen.ai/api/v1/oauth2/token"
 	QwenOAuthClientID       = "f0304373b74a44d2b584a3fb70ca9e56"
 	QwenOAuthScope          = "openid profile email model.completion"
+	QwenOAuthDeviceAuthURL  = "https://chat.qwen.ai/api/v1/oauth2/device/code"
 )
