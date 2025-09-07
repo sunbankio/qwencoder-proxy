@@ -1,0 +1,31 @@
+name: Release Build
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Build
+      run: |
+        mkdir -p dist
+        GOOS=linux GOARCH=amd64 go build -o dist/qwencoder-proxy-linux-amd64 ./cmd/qwencoder-proxy
+
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./dist/qwencoder-proxy-linux-amd64
+        asset_name: qwencoder-proxy-linux-amd64
+        asset_content_type: application/octet-stream
