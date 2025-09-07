@@ -42,68 +42,68 @@ func TestChunkParser(t *testing.T) {
 	parser := NewChunkParser()
 
 	tests := []struct {
-		name           string
-		input          string
-		expectedType   ChunkType
-		expectedValid  bool
+		name            string
+		input           string
+		expectedType    ChunkType
+		expectedValid   bool
 		expectedContent bool
-		expectedText   string
+		expectedText    string
 	}{
 		{
-			name:           "Empty line",
-			input:          "",
-			expectedType:   ChunkTypeEmpty,
-			expectedValid:  false,
+			name:            "Empty line",
+			input:           "",
+			expectedType:    ChunkTypeEmpty,
+			expectedValid:   false,
 			expectedContent: false,
 		},
 		{
-			name:           "Whitespace only",
-			input:          "   \n",
-			expectedType:   ChunkTypeEmpty,
-			expectedValid:  false,
+			name:            "Whitespace only",
+			input:           "   \n",
+			expectedType:    ChunkTypeEmpty,
+			expectedValid:   false,
 			expectedContent: false,
 		},
 		{
-			name:           "Non-data line",
-			input:          "event: message\n",
-			expectedType:   ChunkTypeUnknown,
-			expectedValid:  true,
+			name:            "Non-data line",
+			input:           "event: message\n",
+			expectedType:    ChunkTypeUnknown,
+			expectedValid:   true,
 			expectedContent: false,
 		},
 		{
-			name:           "DONE message",
-			input:          "data: [DONE]\n",
-			expectedType:   ChunkTypeDone,
-			expectedValid:  true,
+			name:            "DONE message",
+			input:           "data: [DONE]\n",
+			expectedType:    ChunkTypeDone,
+			expectedValid:   true,
 			expectedContent: false,
 		},
 		{
-			name:           "Valid data chunk with content",
-			input:          `data: {"choices":[{"delta":{"content":"Hello"}}]}` + "\n",
-			expectedType:   ChunkTypeData,
-			expectedValid:  true,
+			name:            "Valid data chunk with content",
+			input:           `data: {"choices":[{"delta":{"content":"Hello"}}]}` + "\n",
+			expectedType:    ChunkTypeData,
+			expectedValid:   true,
 			expectedContent: true,
-			expectedText:   "Hello",
+			expectedText:    "Hello",
 		},
 		{
-			name:           "Valid data chunk without content",
-			input:          `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n",
-			expectedType:   ChunkTypeData,
-			expectedValid:  true,
+			name:            "Valid data chunk without content",
+			input:           `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n",
+			expectedType:    ChunkTypeData,
+			expectedValid:   true,
 			expectedContent: false,
 		},
 		{
-			name:           "Malformed JSON",
-			input:          `data: {"choices":[{"delta":{"content":"Hello"}` + "\n",
-			expectedType:   ChunkTypeMalformed,
-			expectedValid:  false,
+			name:            "Malformed JSON",
+			input:           `data: {"choices":[{"delta":{"content":"Hello"}` + "\n",
+			expectedType:    ChunkTypeMalformed,
+			expectedValid:   false,
 			expectedContent: false,
 		},
 		{
-			name:           "Invalid structure",
-			input:          `data: {"invalid": "structure"}` + "\n",
-			expectedType:   ChunkTypeData,
-			expectedValid:  true,
+			name:            "Invalid structure",
+			input:           `data: {"invalid": "structure"}` + "\n",
+			expectedType:    ChunkTypeData,
+			expectedValid:   true,
 			expectedContent: false,
 		},
 	}

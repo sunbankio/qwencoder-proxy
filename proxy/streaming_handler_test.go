@@ -115,7 +115,7 @@ func TestHandleStreamingResponseV2(t *testing.T) {
 
 			// Check the output
 			output := recorder.Body.String()
-			
+
 			for _, expected := range tt.expectedOutput {
 				if !strings.Contains(output, expected) {
 					t.Errorf("Expected output to contain %q, but it didn't. Output: %s", expected, output)

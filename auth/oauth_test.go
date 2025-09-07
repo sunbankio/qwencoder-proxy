@@ -7,7 +7,7 @@ import (
 
 func TestIsTokenValid(t *testing.T) {
 	currentTime := time.Now().UnixMilli()
-	
+
 	tests := []struct {
 		name        string
 		credentials OAuthCreds

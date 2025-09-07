@@ -6,12 +6,12 @@ import (
 
 func TestLogger(t *testing.T) {
 	logger := NewLogger()
-	
+
 	// Test that we can create a logger
 	if logger == nil {
 		t.Error("Failed to create logger")
 	}
-	
+
 	// Test logging functions (these should not panic)
 	logger.StreamLog("Test stream log")
 	logger.NonStreamLog("Test non-stream log")

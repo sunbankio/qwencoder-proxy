@@ -34,17 +34,17 @@ func (cs CircuitState) String() string {
 
 // CircuitBreaker implements the circuit breaker pattern for upstream resilience
 type CircuitBreaker struct {
-	mu                sync.RWMutex
-	maxFailures       int
-	resetTimeout      time.Duration
-	state             CircuitState
-	failureCount      int
-	successCount      int
-	lastFailureTime   time.Time
-	lastSuccessTime   time.Time
-	halfOpenMaxTries  int
-	halfOpenTries     int
-	logger            *logging.Logger
+	mu               sync.RWMutex
+	maxFailures      int
+	resetTimeout     time.Duration
+	state            CircuitState
+	failureCount     int
+	successCount     int
+	lastFailureTime  time.Time
+	lastSuccessTime  time.Time
+	halfOpenMaxTries int
+	halfOpenTries    int
+	logger           *logging.Logger
 }
 
 // NewCircuitBreaker creates a new circuit breaker
@@ -148,7 +148,7 @@ func (cb *CircuitBreaker) OnFailure(err error) {
 	case CircuitClosed:
 		if cb.failureCount >= cb.maxFailures {
 			cb.state = CircuitOpen
-			cb.logger.WarningLog("Circuit breaker opened due to %d failures. Last error: %v", 
+			cb.logger.WarningLog("Circuit breaker opened due to %d failures. Last error: %v",
 				cb.failureCount, err)
 		}
 	case CircuitHalfOpen:
@@ -193,11 +193,11 @@ type CircuitBreakerStats struct {
 
 // RetryConfig holds configuration for retry logic
 type RetryConfig struct {
-	MaxRetries      int
-	BaseDelay       time.Duration
-	MaxDelay        time.Duration
-	BackoffFactor   float64
-	Jitter          bool
+	MaxRetries    int
+	BaseDelay     time.Duration
+	MaxDelay      time.Duration
+	BackoffFactor float64
+	Jitter        bool
 }
 
 // DefaultRetryConfig returns a default retry configuration
@@ -235,7 +235,7 @@ func (r *RetryWithBackoff) Execute(operation func() error) error {
 	for attempt := 0; attempt <= r.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := r.calculateDelay(attempt)
-			r.logger.DebugLog("Retrying operation after %v (attempt %d/%d)", 
+			r.logger.DebugLog("Retrying operation after %v (attempt %d/%d)",
 				delay, attempt, r.config.MaxRetries)
 			time.Sleep(delay)
 		}
@@ -264,7 +264,7 @@ func (r *RetryWithBackoff) Execute(operation func() error) error {
 // calculateDelay calculates the delay for the next retry attempt
 func (r *RetryWithBackoff) calculateDelay(attempt int) time.Duration {
 	delay := float64(r.config.BaseDelay) * pow(r.config.BackoffFactor, float64(attempt-1))
-	
+
 	if delay > float64(r.config.MaxDelay) {
 		delay = float64(r.config.MaxDelay)
 	}
@@ -287,7 +287,7 @@ func (r *RetryWithBackoff) isRetryableError(err error) bool {
 	}
 
 	errStr := err.Error()
-	
+
 	// Non-retryable errors
 	nonRetryablePatterns := []string{
 		"context canceled",
@@ -318,7 +318,7 @@ type EnhancedErrorRecoveryManager struct {
 // NewEnhancedErrorRecoveryManager creates an enhanced error recovery manager
 func NewEnhancedErrorRecoveryManager() *EnhancedErrorRecoveryManager {
 	baseManager := NewErrorRecoveryManager()
-	
+
 	return &EnhancedErrorRecoveryManager{
 		ErrorRecoveryManager: baseManager,
 		circuitBreaker:       NewCircuitBreaker(5, 30*time.Second),
@@ -328,7 +328,7 @@ func NewEnhancedErrorRecoveryManager() *EnhancedErrorRecoveryManager {
 
 // HandleErrorWithCircuitBreaker handles errors with circuit breaker protection
 func (erm *EnhancedErrorRecoveryManager) HandleErrorWithCircuitBreaker(
-	err *UpstreamError, 
+	err *UpstreamError,
 	state *StreamState,
 	operation func() error,
 ) RecoveryAction {
@@ -373,7 +373,7 @@ func pow(base, exp float64) float64 {
 	if exp == 1 {
 		return base
 	}
-	
+
 	result := 1.0
 	for i := 0; i < int(exp); i++ {
 		result *= base
@@ -390,12 +390,12 @@ func randomFloat() float64 {
 
 // contains checks if a string contains a substring (case-insensitive)
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && 
-		   (s == substr || 
-		    (len(s) > len(substr) && 
-		     (s[:len(substr)] == substr || 
-		      s[len(s)-len(substr):] == substr ||
-		      indexOfSubstring(s, substr) >= 0)))
+	return len(s) >= len(substr) &&
+		(s == substr ||
+			(len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					indexOfSubstring(s, substr) >= 0)))
 }
 
 // indexOfSubstring finds the index of a substring in a string
@@ -406,7 +406,7 @@ func indexOfSubstring(s, substr string) int {
 	if len(s) < len(substr) {
 		return -1
 	}
-	
+
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {
 			return i

@@ -115,4 +115,3 @@ func generateCodeChallenge(codeVerifier string) string {
 	h.Write([]byte(codeVerifier))
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
-

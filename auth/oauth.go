@@ -106,6 +106,7 @@ func IsTokenValid(credentials OAuthCreds) bool {
 	// Add 30 second buffer. TokenRefreshBufferMs is defined in constants.go
 	return time.Now().UnixMilli() < credentials.ExpiryDate-TokenRefreshBufferMs
 }
+
 // RefreshAccessToken refreshes the OAuth token using the refresh token
 func RefreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
 	if credentials.RefreshToken == "" {
@@ -149,6 +150,7 @@ func RefreshAccessToken(credentials OAuthCreds) (OAuthCreds, error) {
 
 	return updatedCredentials, nil
 }
+
 // AuthenticateWithOAuth performs the complete OAuth device authorization flow
 func AuthenticateWithOAuth() error {
 	return AuthenticateWithDeviceFlow()

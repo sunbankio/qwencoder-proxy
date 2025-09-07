@@ -68,7 +68,7 @@ func NewStreamState() *StreamState {
 func (s *StreamState) TransitionTo(newState StreamingState, reason string) {
 	oldState := s.Current
 	s.Current = newState
-	logging.NewLogger().DebugLog("State transition: %s -> %s (reason: %s)", 
+	logging.NewLogger().DebugLog("State transition: %s -> %s (reason: %s)",
 		oldState.String(), newState.String(), reason)
 }
 
@@ -394,12 +394,12 @@ func (erm *ErrorRecoveryManager) HandleError(err *UpstreamError, state *StreamSt
 
 // StreamProcessor coordinates the stream processing components
 type StreamProcessor struct {
-	state        *StreamState
-	parser       *ChunkParser
-	recovery     *ErrorRecoveryManager
-	writer       *responseWriterWrapper
-	ctx          context.Context
-	logger       *logging.Logger
+	state    *StreamState
+	parser   *ChunkParser
+	recovery *ErrorRecoveryManager
+	writer   *responseWriterWrapper
+	ctx      context.Context
+	logger   *logging.Logger
 }
 
 // NewStreamProcessor creates a new stream processor
@@ -427,7 +427,7 @@ func (sp *StreamProcessor) ProcessLine(rawLine string) error {
 
 	// Parse the chunk
 	chunk := sp.parser.Parse(rawLine)
-	sp.logger.DebugLog("Parsed chunk: type=%s, valid=%t, hasContent=%t", 
+	sp.logger.DebugLog("Parsed chunk: type=%s, valid=%t, hasContent=%t",
 		chunk.Type.String(), chunk.IsValid, chunk.HasContent)
 
 	// Handle based on current state
@@ -472,7 +472,7 @@ func (sp *StreamProcessor) handleInitialChunk(chunk *ParsedChunk) error {
 		// Handle error
 		return sp.handleChunkError(chunk)
 	}
-	
+
 	sp.state.IncrementChunk()
 	return nil
 }
@@ -539,7 +539,7 @@ func (sp *StreamProcessor) handleRecoveryChunk(chunk *ParsedChunk) error {
 		sp.state.TransitionTo(StateNormalFlow, "recovered from error")
 		return sp.handleNormalChunk(chunk)
 	}
-	
+
 	// Still having issues
 	return sp.handleChunkError(chunk)
 }

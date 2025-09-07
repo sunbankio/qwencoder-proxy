@@ -12,12 +12,12 @@ type ServerConfig struct {
 
 // HTTPClientConfig holds HTTP client configuration
 type HTTPClientConfig struct {
-	MaxIdleConns           int
-	MaxIdleConnsPerHost    int
-	IdleConnTimeoutSeconds int
-	RequestTimeoutSeconds  int
+	MaxIdleConns            int
+	MaxIdleConnsPerHost     int
+	IdleConnTimeoutSeconds  int
+	RequestTimeoutSeconds   int
 	StreamingTimeoutSeconds int
-	ReadTimeoutSeconds     int
+	ReadTimeoutSeconds      int
 }
 
 // LoggingConfig holds logging-related configuration
@@ -39,12 +39,12 @@ func DefaultConfig() *Config {
 			Port: "8143",
 		},
 		HTTPClient: HTTPClientConfig{
-			MaxIdleConns:           50,
-			MaxIdleConnsPerHost:    50,
-			IdleConnTimeoutSeconds: 180,
-			RequestTimeoutSeconds:  300,
+			MaxIdleConns:            50,
+			MaxIdleConnsPerHost:     50,
+			IdleConnTimeoutSeconds:  180,
+			RequestTimeoutSeconds:   300,
 			StreamingTimeoutSeconds: 900, // Using the value from proxy/client.go as it's longer
-			ReadTimeoutSeconds:     45,
+			ReadTimeoutSeconds:      45,
 		},
 		Logging: LoggingConfig{
 			IsDebugMode: false,
