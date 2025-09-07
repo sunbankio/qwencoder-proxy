@@ -306,8 +306,8 @@ func ModelsHandler(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			{
-				ID:            "qwen3-coder-turbo",
-				Name:          "Qwen: Qwen3 Coder Turbo",
+				ID:            "qwen3-coder-flash",
+				Name:          "Qwen: Qwen3 Coder Flash",
 				ContextLength: 262144,
 				Architecture: Arch{
 					Modality:         "text->text",
