@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/gofrs/flock v0.12.1
-	golang.org/x/oauth2 v0.23.0
+	golang.org/x/oauth2 v0.27.0
 )
 
 require golang.org/x/sys v0.22.0 // indirect
