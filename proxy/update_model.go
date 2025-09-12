@@ -2,6 +2,24 @@ package proxy
 
 import "encoding/json"
 
+// extractModel extracts the model name from the request body
+func extractModel(requestBodyBytes []byte) string {
+	var requestJSON map[string]interface{}
+	err := json.Unmarshal(requestBodyBytes, &requestJSON)
+	if err != nil {
+		return "unknown"
+	}
+
+	// Check if model field exists and get its value
+	if model, exists := requestJSON["model"]; exists {
+		if modelStr, ok := model.(string); ok {
+			return modelStr
+		}
+	}
+	
+	return "unknown"
+}
+
 func updateModel(requestBodyBytes []byte) []byte {
 	var requestJSON map[string]interface{}
 	err := json.Unmarshal(requestBodyBytes, &requestJSON)

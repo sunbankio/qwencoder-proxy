@@ -162,6 +162,9 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	// Check if streaming is enabled
 	isClientStreaming := checkIfStreaming(requestBodyBytes)
 
+	// Extract model information for logging
+	model := extractModel(requestBodyBytes)
+
 	accessToken, targetEndpoint, err := qwenclient.GetValidTokenAndEndpoint()
 	if err != nil {
 		handleAuthError(w, err)
@@ -194,6 +197,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 				r.Method,
 				r.URL.Path,
 				userAgent,
+				model,
 				len(requestBodyBytes),
 				isClientStreaming,
 				0,   // upstream status (0 indicates error)
@@ -212,6 +216,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 			r.Method,
 			r.URL.Path,
 			userAgent,
+			model,
 			len(requestBodyBytes),
 			isClientStreaming,
 			0,   // upstream status (0 indicates error)
@@ -241,6 +246,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		r.Method,
 		r.URL.Path,
 		userAgent,
+		model,
 		len(requestBodyBytes),
 		isClientStreaming,
 		resp.StatusCode,           // upstream status
