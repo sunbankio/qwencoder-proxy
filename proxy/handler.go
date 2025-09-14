@@ -368,8 +368,8 @@ func SetProxyHeaders(req *http.Request, accessToken string) {
 	// Set only the headers that the proxy explicitly defines
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json") // Always JSON for body
-	req.Header.Set("User-Agent", fmt.Sprintf("QwenCode/0.0.10 (%s; %s)", runtime.GOOS, runtime.GOARCH))
+	req.Header.Set("User-Agent", fmt.Sprintf("QwenCode/0.0.11 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 	req.Header.Set("X-DashScope-CacheControl", "enable")
-	req.Header.Set("X-DashScope-UserAgent", fmt.Sprintf("QwenCode/0.0.10 (%s; %s)", runtime.GOOS, runtime.GOARCH))
+	req.Header.Set("X-DashScope-UserAgent", fmt.Sprintf("QwenCode/0.0.11 (%s; %s)", runtime.GOOS, runtime.GOARCH))
 	req.Header.Set("X-DashScope-AuthType", "qwen-oauth")
 }
