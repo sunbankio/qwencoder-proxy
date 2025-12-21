@@ -63,10 +63,7 @@ func handleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 	}
 
 	// Log final statistics
-	logger.DebugLog("Stream processing completed. Chunks processed: %d, Errors: %d, Duration: %v",
-		processor.state.ChunkCount,
-		processor.state.ErrorCount,
-		processor.state.LastValidChunk.Sub(processor.state.StartTime))
+	logger.DebugLog("Stream processing completed. Chunks processed: %d", processor.state.ChunkCount)
 }
 
 // StreamingConfig holds configuration for the streaming handler

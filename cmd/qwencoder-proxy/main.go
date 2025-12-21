@@ -10,8 +10,13 @@ import (
 
 	"github.com/sunbankio/qwencoder-proxy/auth"
 	"github.com/sunbankio/qwencoder-proxy/config"
+	"github.com/sunbankio/qwencoder-proxy/converter"
 	"github.com/sunbankio/qwencoder-proxy/logging"
 	"github.com/sunbankio/qwencoder-proxy/proxy"
+	"github.com/sunbankio/qwencoder-proxy/provider"
+	"github.com/sunbankio/qwencoder-proxy/provider/antigravity"
+	"github.com/sunbankio/qwencoder-proxy/provider/gemini"
+	"github.com/sunbankio/qwencoder-proxy/provider/kiro"
 	"github.com/sunbankio/qwencoder-proxy/qwenclient"
 )
 
@@ -27,10 +32,45 @@ func main() {
 	// Set the global debug mode variable
 	logging.IsDebugMode = debugFlag
 
-	// Set up the HTTP handler for /v1/models
-	http.HandleFunc("/v1/models", proxy.ModelsHandler)
+	// Create provider factory and register providers
+	factory := provider.NewFactory()
 
-	// Set up the general proxy handler for all other routes
+	// Register Qwen provider (existing)
+	// For now, we'll just use the existing qwenclient for Qwen provider
+
+	// Register Gemini provider
+	geminiAuth := auth.NewGeminiAuthenticator(nil)
+	geminiProvider := gemini.NewProvider(geminiAuth)
+	factory.Register(geminiProvider)
+
+	// Register Kiro provider
+	kiroAuth := auth.NewKiroAuthenticator(nil)
+	kiroProvider := kiro.NewProvider(kiroAuth)
+	factory.Register(kiroProvider)
+
+	// Register Antigravity provider
+	antigravityAuth := auth.NewGeminiAuthenticator(&auth.GeminiOAuthConfig{
+		ClientID:     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+		ClientSecret: "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",
+		Scope:        "https://www.googleapis.com/auth/cloud-platform",
+		RedirectPort: 8086,
+		CredsDir:     ".antigravity",
+		CredsFile:    "oauth_creds.json",
+	})
+	antigravityProvider := antigravity.NewProvider(antigravityAuth)
+	factory.Register(antigravityProvider)
+
+	// Create converter factory
+	convFactory := converter.NewFactory()
+
+	// Register native format routes
+	proxy.RegisterGeminiRoutes(http.DefaultServeMux, factory)
+	proxy.RegisterAnthropicRoutes(http.DefaultServeMux, factory)
+
+	// Register OpenAI-compatible routes
+	proxy.RegisterOpenAIRoutes(http.DefaultServeMux, factory, convFactory)
+
+	// Set up the general proxy handler for all other routes (fallback)
 	http.HandleFunc("/", proxy.ProxyHandler)
 
 	// Check for credentials on startup
