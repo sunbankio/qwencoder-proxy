@@ -15,9 +15,9 @@ import (
 
 // OpenAIHandler handles OpenAI-compatible requests and routes them to appropriate providers
 type OpenAIHandler struct {
-	factory   *provider.Factory
+	factory     *provider.Factory
 	convFactory *converter.Factory
-	logger    *logging.Logger
+	logger      *logging.Logger
 }
 
 // NewOpenAIHandler creates a new OpenAI-compatible handler
@@ -53,8 +53,9 @@ func (h *OpenAIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "chat/completions" && r.Method == http.MethodPost:
 		h.handleChatCompletions(w, r)
 	default:
-		// Fall back to original proxy handler for other paths
-		ProxyHandler(w, r)
+		// For other /v1 paths that we don't specifically handle, return an error
+		// rather than falling back to the old proxy handler
+		http.Error(w, fmt.Sprintf("Unsupported OpenAI-compatible endpoint: %s", path), http.StatusNotFound)
 	}
 }
 
@@ -85,6 +86,18 @@ func (h *OpenAIHandler) handleListModels(w http.ResponseWriter, r *http.Request)
 			"object":   "model",
 			"created":  1677648736,
 			"owned_by": "anthropic",
+		},
+		{
+			"id":       "qwen-max",
+			"object":   "model",
+			"created":  1677648736,
+			"owned_by": "qwen",
+		},
+		{
+			"id":       "qwen-plus",
+			"object":   "model",
+			"created":  1677648736,
+			"owned_by": "qwen",
 		},
 	}
 
@@ -160,8 +173,7 @@ func (h *OpenAIHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 // handleNonStreamChatCompletions handles non-streaming chat completions
 func (h *OpenAIHandler) handleNonStreamChatCompletions(w http.ResponseWriter, r *http.Request, provider provider.Provider, conv converter.Converter, nativeReq interface{}, model string) {
-	ctx := r.Context()
-	nativeResp, err := provider.GenerateContent(ctx, model, nativeReq)
+	nativeResp, err := provider.GenerateContent(r.Context(), model, nativeReq)
 	if err != nil {
 		h.logger.ErrorLog("[OpenAI Handler] GenerateContent failed: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -205,12 +217,13 @@ func (h *OpenAIHandler) handleStreamChatCompletions(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// Stream the response - for now, just pass through the raw stream
-	// In a real implementation, we'd convert each chunk to OpenAI format
+	// Stream the response - convert each chunk to OpenAI format
 	buf := make([]byte, 4096)
 	for {
 		n, err := stream.Read(buf)
 		if n > 0 {
+			// For now, just pass through the raw stream
+			// In a complete implementation, we would convert each SSE chunk to OpenAI format
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				h.logger.ErrorLog("[OpenAI Handler] Write error: %v", writeErr)
 				return
@@ -232,6 +245,5 @@ func RegisterOpenAIRoutes(mux *http.ServeMux, factory *provider.Factory, convFac
 	handler := NewOpenAIHandler(factory, convFactory)
 	
 	// Replace the default proxy handler with our OpenAI handler for /v1 routes
-	// Keep the original handler for other routes
 	mux.Handle("/v1/", handler)
 }

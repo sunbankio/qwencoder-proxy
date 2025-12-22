@@ -17,6 +17,7 @@ import (
 	"github.com/sunbankio/qwencoder-proxy/provider/antigravity"
 	"github.com/sunbankio/qwencoder-proxy/provider/gemini"
 	"github.com/sunbankio/qwencoder-proxy/provider/kiro"
+	"github.com/sunbankio/qwencoder-proxy/provider/qwen"
 	"github.com/sunbankio/qwencoder-proxy/qwenclient"
 )
 
@@ -36,8 +37,9 @@ func main() {
 	factory := provider.NewFactory()
 
 	// Register Qwen provider (existing)
-	// For now, we'll just use the existing qwenclient for Qwen provider
-
+	qwenProvider := qwen.NewProvider()
+	factory.Register(qwenProvider)
+	
 	// Register Gemini provider
 	geminiAuth := auth.NewGeminiAuthenticator(nil)
 	geminiProvider := gemini.NewProvider(geminiAuth)

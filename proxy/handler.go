@@ -1,3 +1,4 @@
+// Package proxy provides HTTP handlers for the proxy server
 package proxy
 
 import (
@@ -281,7 +282,7 @@ func ModelsHandler(w http.ResponseWriter, r *http.Request) {
 		Data: []Model{
 			{
 				ID:            "qwen3-coder-plus",
-				Name:          "Qwen: Qwen3 Coder ",
+				Name:          "Qwen: Qwen3 Coder Plus",
 				ContextLength: 1048576,
 				Architecture: Arch{
 					Modality:         "text->text",
