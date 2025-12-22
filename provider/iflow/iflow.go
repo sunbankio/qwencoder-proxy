@@ -96,33 +96,19 @@ func (p *Provider) IsHealthy(ctx context.Context) bool {
 
 // ListModels returns available models in OpenAI format
 func (p *Provider) ListModels(ctx context.Context) (interface{}, error) {
-	token, err := p.authenticator.GetToken(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get token: %w", err)
+	// iFlow doesn't support /models endpoint, return hardcoded models
+	modelsResp := OpenAIModelsResponse{
+		Object: "list",
+		Data:   []OpenAIModel{},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/models", nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var modelsResp OpenAIModelsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&modelsResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	for _, modelID := range SupportedModels {
+		modelsResp.Data = append(modelsResp.Data, OpenAIModel{
+			ID:      modelID,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: "iflow",
+		})
 	}
 
 	return &modelsResp, nil
@@ -149,8 +135,12 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "qwencoder-proxy/1.0")
 
-	p.logger.DebugLog("[iFlow] Sending chat completions request to %s", url)
+	p.logger.InfoLog("[iFlow] Sending chat completions request to %s", url)
+	p.logger.InfoLog("[iFlow] Request headers: %v", req.Header)
+	p.logger.InfoLog("[iFlow] Request body: %s", string(reqBody))
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -179,6 +169,7 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		p.logger.ErrorLog("[iFlow] API error details - Status: %d, Headers: %v, Body: %s", resp.StatusCode, resp.Header, string(body))
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -211,9 +202,12 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Accept", "text/event-stream, application/json")
+	req.Header.Set("User-Agent", "qwencoder-proxy/1.0")
 
-	p.logger.DebugLog("[iFlow] Sending streaming chat completions request to %s", url)
+	p.logger.InfoLog("[iFlow] Sending streaming chat completions request to %s", url)
+	p.logger.InfoLog("[iFlow] Request headers: %v", req.Header)
+	p.logger.InfoLog("[iFlow] Request body: %s", string(reqBody))
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -242,6 +236,7 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		p.logger.ErrorLog("[iFlow] API error details - Status: %d, Headers: %v, Body: %s", resp.StatusCode, resp.Header, string(body))
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 

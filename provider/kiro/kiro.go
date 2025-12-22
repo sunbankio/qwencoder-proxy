@@ -2,10 +2,12 @@
 package kiro
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -280,7 +282,106 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	return resp.Body, nil
+	return p.convertBedrockStreamToOpenAI(ctx, resp.Body, model), nil
+}
+
+// convertBedrockStreamToOpenAI converts AWS Bedrock event stream to OpenAI SSE
+func (p *Provider) convertBedrockStreamToOpenAI(ctx context.Context, body io.ReadCloser, model string) io.ReadCloser {
+	r, w := io.Pipe()
+
+	go func() {
+		defer body.Close()
+		defer w.Close()
+
+		reader := bufio.NewReader(body)
+		
+		// Use a unique ID for the whole stream
+		id := "chatcmpl-" + generateUUID()
+		created := time.Now().Unix()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// 1. Read Total Length (4 bytes)
+			lenBuf := make([]byte, 4)
+			if _, err := io.ReadFull(reader, lenBuf); err != nil {
+				if err != io.EOF {
+					p.logger.ErrorLog("Error reading stream length: %v", err)
+				}
+				break
+			}
+			totalLen := binary.BigEndian.Uint32(lenBuf)
+
+			// 2. Read Header Length (4 bytes)
+			if _, err := io.ReadFull(reader, lenBuf); err != nil {
+				break
+			}
+			headerLen := binary.BigEndian.Uint32(lenBuf)
+
+			// 3. Read Prelude CRC (4 bytes) - discard
+			if _, err := reader.Discard(4); err != nil {
+				break
+			}
+
+			// 4. Read Headers (headerLen bytes) - discard
+			if _, err := reader.Discard(int(headerLen)); err != nil {
+				break
+			}
+
+			// 5. Read Payload
+			// Payload length = TotalLen - 12 (prelude) - HeaderLen - 4 (MessageCRC)
+			payloadLen := int(totalLen) - 16 - int(headerLen)
+			
+			payload := make([]byte, payloadLen)
+			if _, err := io.ReadFull(reader, payload); err != nil {
+				break
+			}
+
+			// 6. Read Message CRC (4 bytes) - discard
+			if _, err := reader.Discard(4); err != nil {
+				break
+			}
+
+			// Parse payload
+			var event struct {
+				Content string `json:"content"`
+			}
+			
+			if err := json.Unmarshal(payload, &event); err != nil {
+				continue
+			}
+
+			if event.Content != "" {
+				chunk := map[string]interface{}{
+					"id":      id,
+					"object":  "chat.completion.chunk",
+					"created": created,
+					"model":   model,
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]string{
+								"content": event.Content,
+							},
+							"finish_reason": nil,
+						},
+					},
+				}
+				
+				chunkBytes, _ := json.Marshal(chunk)
+				fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
+			}
+		}
+
+		// Send DONE
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+	}()
+
+	return r
 }
 
 // buildKiroRequest builds a Kiro API request from a Claude request

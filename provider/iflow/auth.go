@@ -114,6 +114,10 @@ func (a *Authenticator) GetToken(ctx context.Context) (string, error) {
 		}
 	}
 
+	// Prefer API key over access token for API calls
+	if a.credentials.APIKey != "" {
+		return a.credentials.APIKey, nil
+	}
 	return a.credentials.AccessToken, nil
 }
 
@@ -168,7 +172,14 @@ func (a *Authenticator) loadCredentials() {
 	}
 
 	a.credentials = &creds
-}
+		
+		// If we have access token but no API key, try to fetch user info
+		if a.credentials.APIKey == "" && a.credentials.AccessToken != "" {
+			if err := a.fetchUserInfo(); err != nil {
+				a.logger.DebugLog("[iFlow] Failed to fetch user info during load: %v", err)
+			}
+		}
+	}
 
 // saveCredentials saves credentials to file
 func (a *Authenticator) saveCredentials() error {
@@ -333,6 +344,12 @@ func (a *Authenticator) exchangeCodeForTokens(code string, pkceCodes *PKCECodes)
 		Type:         "iflow",
 	}
 
+	// Fetch user info and API key
+	if err := a.fetchUserInfo(); err != nil {
+		a.logger.DebugLog("[iFlow] Failed to fetch user info: %v", err)
+		// Don't fail the exchange, just log the error
+	}
+
 	return a.saveCredentials()
 }
 
@@ -401,6 +418,12 @@ func (a *Authenticator) refreshToken() error {
 	a.credentials.Expire = expiresAt.Format(time.RFC3339)
 	a.credentials.ExpiresAt = expiresAt.Format(time.RFC3339)
 	a.credentials.LastRefresh = time.Now().Format(time.RFC3339)
+
+	// Fetch user info and API key after refresh
+	if err := a.fetchUserInfo(); err != nil {
+		a.logger.DebugLog("[iFlow] Failed to fetch user info after refresh: %v", err)
+		// Don't fail the refresh, just log the error
+	}
 
 	return a.saveCredentials()
 }

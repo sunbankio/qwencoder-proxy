@@ -93,11 +93,11 @@ func main() {
 	proxy.RegisterGeminiRoutes(http.DefaultServeMux, factory)
 	proxy.RegisterAnthropicRoutes(http.DefaultServeMux, factory)
 
-	// Register OpenAI-compatible routes
-	proxy.RegisterOpenAIRoutes(http.DefaultServeMux, factory, convFactory)
-
-	// Register provider-specific OpenAI-compatible routes
+	// Register provider-specific OpenAI-compatible routes FIRST (more specific)
 	proxy.RegisterProviderSpecificRoutes(http.DefaultServeMux, factory, convFactory)
+
+	// Register general OpenAI-compatible routes LAST (more general)
+	proxy.RegisterOpenAIRoutes(http.DefaultServeMux, factory, convFactory)
 
 	// Set up the general proxy handler for all other routes (fallback)
 	http.HandleFunc("/", proxy.ProxyHandler)
@@ -157,6 +157,14 @@ func main() {
 		log.Printf("Warning: Antigravity credentials check failed: %v", err)
 	} else {
 		log.Println("Antigravity credentials are valid.")
+	}
+
+	// iFlow
+	log.Println("Checking iFlow credentials...")
+	if _, err := iflowProvider.GetAuthenticator().GetToken(ctx); err != nil {
+		log.Printf("Warning: iFlow credentials check failed: %v", err)
+	} else {
+		log.Println("iFlow credentials are valid.")
 	}
 
 	// Start the server
