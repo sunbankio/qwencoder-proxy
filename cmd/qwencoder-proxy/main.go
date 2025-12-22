@@ -99,9 +99,6 @@ func main() {
 	// Register general OpenAI-compatible routes LAST (more general)
 	proxy.RegisterOpenAIRoutes(http.DefaultServeMux, factory, convFactory)
 
-	// Set up the general proxy handler for all other routes (fallback)
-	http.HandleFunc("/", proxy.ProxyHandler)
-
 	// Check for credentials on startup
 	log.Println("Checking Qwen credentials...")
 	_, _, err := qwenclient.GetValidTokenAndEndpoint()

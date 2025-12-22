@@ -101,3 +101,30 @@ func HandleStreamingResponse(w *responseWriterWrapper, resp *http.Response, ctx 
 func GetStreamingConfig() *StreamingConfig {
 	return DefaultStreamingConfig()
 }
+
+// responseWriterWrapper wraps http.ResponseWriter to capture response size and status code
+type responseWriterWrapper struct {
+	http.ResponseWriter
+	statusCode int
+	size       int
+}
+
+// WriteHeader captures the status code and calls the original WriteHeader
+func (w *responseWriterWrapper) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+// Write captures the response size and calls the original Write
+func (w *responseWriterWrapper) Write(b []byte) (int, error) {
+	size, err := w.ResponseWriter.Write(b)
+	w.size += size
+	return size, err
+}
+
+// Flush implements the http.Flusher interface
+func (w *responseWriterWrapper) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
