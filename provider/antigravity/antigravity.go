@@ -35,16 +35,11 @@ var SupportedModels = []string{
 	"gemini-2.5-computer-use-preview-10-2025",
 	"gemini-3-pro-image-preview",
 	"gemini-3-pro-preview",
-	"gemini-3-flash-preview",
+	"gemini-3-flash",
 	"gemini-2.5-flash",
 	"gemini-claude-sonnet-4-5",
 	"gemini-claude-sonnet-4-5-thinking",
 	"gemini-claude-opus-4-5-thinking",
-	"gpt-oss-120b-medium",
-	"gemini-3-pro-low",
-	"gemini-2.5-flash-lite",
-	"gemini-2.5-pro",
-	"gemini-2.5-flash-thinking",
 }
 
 // ModelAliasMapping maps aliases to actual model names
@@ -197,12 +192,80 @@ func (p *Provider) ListModels(ctx context.Context) (interface{}, error) {
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	var modelsResp gemini.GeminiModelsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&modelsResp); err != nil {
+	// Debug: read the raw response body to see what we get
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	
+	p.logger.DebugLog("[Antigravity] Raw fetchAvailableModels response: %s", string(respBody))
+	
+	// Try to unmarshal the response into a generic map
+	var rawResponse map[string]interface{}
+	if err := json.Unmarshal(respBody, &rawResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return &modelsResp, nil
+	// Create a new response with the raw data
+	updatedResp := &gemini.GeminiModelsResponse{
+		Models:        []gemini.GeminiModel{},
+		NextPageToken: "",
+	}
+
+	// Extract models from the raw response
+	if modelsData, exists := rawResponse["models"]; exists {
+		if modelsMap, ok := modelsData.(map[string]interface{}); ok {
+			// The models field is an object where keys are model IDs and values are model details
+			for modelID, modelDetails := range modelsMap {
+				if modelDetailsMap, ok := modelDetails.(map[string]interface{}); ok {
+					// Create a model with just the model ID (no provider prefix)
+					model := gemini.GeminiModel{
+						Name: modelID,
+					}
+					
+					// Set other fields if they exist in the response
+					if val, exists := modelDetailsMap["displayName"]; exists {
+						if str, ok := val.(string); ok {
+							model.DisplayName = str
+						}
+					}
+					if val, exists := modelDetailsMap["description"]; exists {
+						if str, ok := val.(string); ok {
+							model.Description = str
+						}
+					}
+					if val, exists := modelDetailsMap["maxTokens"]; exists {
+						if num, ok := val.(float64); ok {
+							model.InputTokenLimit = int(num)
+						}
+					}
+					if val, exists := modelDetailsMap["maxOutputTokens"]; exists {
+						if num, ok := val.(float64); ok {
+							model.OutputTokenLimit = int(num)
+						}
+					}
+					if val, exists := modelDetailsMap["supportedMimeTypes"]; exists {
+						if mimeMap, ok := val.(map[string]interface{}); ok {
+							// Convert the mime types map to an array of methods
+							methods := make([]string, 0, len(mimeMap))
+							for mimeType := range mimeMap {
+								methods = append(methods, mimeType)
+							}
+							model.SupportedGenerationMethods = methods
+						}
+					}
+					
+					updatedResp.Models = append(updatedResp.Models, model)
+				}
+			}
+		} else {
+			p.logger.ErrorLog("[Antigravity] models field is not an object: %T", modelsData)
+		}
+	} else {
+		p.logger.ErrorLog("[Antigravity] No models field found in response: %+v", rawResponse)
+	}
+
+	return updatedResp, nil
 }
 
 // discoverProjectAndModels discovers the project ID and available models

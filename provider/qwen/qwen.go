@@ -26,44 +26,8 @@ const (
 
 // SupportedModels lists all supported Qwen models
 var SupportedModels = []string{
-	"qwen-max",
-	"qwen-plus",
-	"qwen-turbo",
-	"qwen-long",
-	"qwen-vl-max",
-	"qwen-vl-plus",
-	"qwen-audio-turbo",
-	"qwen2.5-72b-instruct",
-	"qwen2.5-32b-instruct",
-	"qwen2.5-14b-instruct",
-	"qwen2.5-7b-instruct",
-	"qwen2.5-3b-instruct",
-	"qwen2.5-1.5b-instruct",
-	"qwen2.5-0.5b-instruct",
-	"qwen3-72b-instruct",
-	"qwen3-32b-instruct",
-	"qwen3-14b-instruct",
-	"qwen3-7b-instruct",
-	"qwen3-4b-instruct",
-	"qwen3-1.8b-instruct",
-	"qwen3-0.5b-instruct",
-	"qwen3-coder-max",
 	"qwen3-coder-plus",
-	"qwen3-coder-turbo",
-	"qwen3-coder",
-	"qwen3-coder-32b",
-	"qwen3-coder-14b",
-	"qwen3-coder-7b",
-	"qwen3-coder-3b",
-	"qwen3-coder-1.5b",
-	"qwen3.5-7b-instruct",
-	"qwen3.5-14b-instruct",
-	"qwen3.5-32b-instruct",
-	"qwen3.5-72b-instruct",
-	"qwen3.5-110b-instruct",
-	"qwen3.5-0.5b-instruct",
-	"qwen3.5-1.5b-instruct",
-	"qwen3.5-3b-instruct",
+	"qwen3-coder-flash",
 }
 
 // Provider implements the provider.Provider interface for Qwen
@@ -173,7 +137,6 @@ func (p *Provider) ListModels(ctx context.Context) (interface{}, error) {
 			"object":     "model",
 			"created":    1677648736,
 			"owned_by":   "qwen",
-			"provider":   string(p.Name()),
 		}
 	}
 	return map[string]interface{}{

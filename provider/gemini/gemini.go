@@ -90,7 +90,7 @@ func (p *Provider) ListModels(ctx context.Context) (interface{}, error) {
 	}
 	for _, modelID := range SupportedModels {
 		modelsResp.Models = append(modelsResp.Models, GeminiModel{
-			Name:        fmt.Sprintf("models/%s", modelID),
+			Name:        modelID,
 			DisplayName: modelID,
 			Description: fmt.Sprintf("A generative model for text and chat generation. ID: %s", modelID),
 			InputTokenLimit: 32768,

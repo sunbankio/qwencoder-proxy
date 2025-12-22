@@ -44,8 +44,12 @@ func (f *Factory) GetByModel(model string) (Provider, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	// Check model prefix to determine provider
-	modelLower := strings.ToLower(model)
+	// Extract the actual model name without provider prefix if present
+	actualModel := model
+	if idx := strings.Index(model, ":"); idx != -1 {
+		actualModel = model[idx+1:]
+	}
+	modelLower := strings.ToLower(actualModel)
 
 	// Gemini models
 	if strings.HasPrefix(modelLower, "gemini-") {
@@ -74,7 +78,7 @@ func (f *Factory) GetByModel(model string) (Provider, error) {
 	// Fallback: check all providers for model support
 	for _, p := range f.providers {
 		for _, m := range p.SupportedModels() {
-			if strings.EqualFold(m, model) || strings.HasPrefix(modelLower, strings.ToLower(m)) {
+			if strings.EqualFold(m, actualModel) || strings.HasPrefix(modelLower, strings.ToLower(m)) {
 				return p, nil
 			}
 		}

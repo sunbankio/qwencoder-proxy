@@ -11,6 +11,8 @@ import (
 	"github.com/sunbankio/qwencoder-proxy/converter"
 	"github.com/sunbankio/qwencoder-proxy/logging"
 	"github.com/sunbankio/qwencoder-proxy/provider"
+	"github.com/sunbankio/qwencoder-proxy/provider/gemini"
+	"github.com/sunbankio/qwencoder-proxy/provider/kiro"
 )
 
 // OpenAIHandler handles OpenAI-compatible requests and routes them to appropriate providers
@@ -61,49 +63,93 @@ func (h *OpenAIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleListModels handles GET /v1/models
 func (h *OpenAIHandler) handleListModels(w http.ResponseWriter, r *http.Request) {
-	// For now, return a simple response - in a real implementation we'd aggregate models from all providers
-	models := []map[string]interface{}{
-		{
-			"id":       "gemini-2.5-flash",
-			"object":   "model",
-			"created":  1677648736,
-			"owned_by": "google",
-		},
-		{
-			"id":       "gemini-2.5-pro",
-			"object":   "model",
-			"created":  1677648736,
-			"owned_by": "google",
-		},
-		{
-			"id":       "claude-sonnet-4-5",
-			"object":   "model",
-			"created":  1677648736,
-			"owned_by": "anthropic",
-		},
-		{
-			"id":       "claude-opus-4-5",
-			"object":   "model",
-			"created":  1677648736,
-			"owned_by": "anthropic",
-		},
-		{
-			"id":       "qwen-max",
-			"object":   "model",
-			"created":  1677648736,
-			"owned_by": "qwen",
-		},
-		{
-			"id":       "qwen-plus",
-			"object":   "model",
-			"created":  1677648736,
-			"owned_by": "qwen",
-		},
+	// Get models from all providers
+	providers := []provider.ProviderType{
+		provider.ProviderQwen,
+		provider.ProviderGeminiCLI,
+		provider.ProviderKiro,
+		provider.ProviderAntigravity,
+	}
+
+	var allModels []map[string]interface{}
+
+	for _, providerType := range providers {
+		provider, err := h.factory.Get(providerType)
+		if err != nil {
+			h.logger.ErrorLog("[OpenAI Handler] Failed to get provider %s: %v", providerType, err)
+			continue
+		}
+
+		modelsData, err := provider.ListModels(r.Context())
+		if err != nil {
+			h.logger.ErrorLog("[OpenAI Handler] Failed to list models for provider %s: %v", providerType, err)
+			continue
+		}
+
+		// Determine the correct owned_by value based on provider type
+		ownedBy := string(providerType)
+		if string(providerType) == "gemini-cli" {
+			ownedBy = "gemini"
+		}
+		
+		// Handle the response based on its type
+		switch v := modelsData.(type) {
+		case *gemini.GeminiModelsResponse:
+			for _, model := range v.Models {
+				allModels = append(allModels, map[string]interface{}{
+					"id":       model.Name,
+					"object":   "model",
+					"created":  1677648736,
+					"owned_by": ownedBy,
+				})
+			}
+		case *kiro.ClaudeModelsResponse:
+			for _, model := range v.Data {
+				allModels = append(allModels, map[string]interface{}{
+					"id":       model.ID,
+					"object":   "model",
+					"created":  1677648736,
+					"owned_by": ownedBy,
+				})
+			}
+		case map[string]interface{}:
+			// Handle generic map responses (like from Qwen)
+			if data, ok := v["data"].([]interface{}); ok {
+				for _, model := range data {
+					if modelMap, ok := model.(map[string]interface{}); ok {
+						// Ensure the model has the required fields
+						if _, exists := modelMap["id"]; !exists {
+							// If no id field, skip this model
+							continue
+						}
+						if _, exists := modelMap["object"]; !exists {
+							modelMap["object"] = "model"
+						}
+						if _, exists := modelMap["created"]; !exists {
+							modelMap["created"] = 1677648736
+						}
+						if _, exists := modelMap["owned_by"]; !exists {
+							modelMap["owned_by"] = ownedBy
+						}
+						// Use ID without provider prefix
+						if id, ok := modelMap["id"].(string); ok {
+							if !strings.Contains(id, ":") {
+								modelMap["id"] = id // Use ID without provider prefix
+							}
+						}
+						allModels = append(allModels, modelMap)
+					}
+				}
+			} else {
+				// Handle case where the response is not in the expected format
+				h.logger.ErrorLog("[OpenAI Handler] Unexpected models data format for provider %s", providerType)
+			}
+		}
 	}
 
 	response := map[string]interface{}{
 		"object": "list",
-		"data":   models,
+		"data":   allModels,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -313,23 +359,76 @@ func (h *ProviderSpecificHandler) handleListModels(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// Convert to OpenAI-compatible format based on provider protocol
-	conv, err := h.convFactory.Get(provider.Protocol())
-	if err != nil {
-		h.logger.ErrorLog("[Provider-Specific Handler] Failed to get converter for protocol %s: %v", provider.Protocol(), err)
-		http.Error(w, fmt.Sprintf("Converter not found for protocol: %s", provider.Protocol()), http.StatusInternalServerError)
-		return
+	// Format the models response in OpenAI-compatible format
+	var allModels []map[string]interface{}
+
+	// Determine the correct owned_by value based on provider type
+	ownedBy := string(h.providerType)
+	if string(h.providerType) == "gemini-cli" {
+		ownedBy = "gemini"
 	}
 
-	openaiResp, err := conv.ToOpenAIResponse(modelsData, "")
-	if err != nil {
-		h.logger.ErrorLog("[Provider-Specific Handler] Failed to convert models response: %v", err)
-		http.Error(w, "Failed to convert models response", http.StatusInternalServerError)
-		return
+	// Handle the response based on its type
+	switch v := modelsData.(type) {
+	case *gemini.GeminiModelsResponse:
+		for _, model := range v.Models {
+			allModels = append(allModels, map[string]interface{}{
+				"id":       model.Name,
+				"object":   "model",
+				"created":  1677648736,
+				"owned_by": ownedBy,
+			})
+		}
+	case *kiro.ClaudeModelsResponse:
+		for _, model := range v.Data {
+			allModels = append(allModels, map[string]interface{}{
+				"id":       model.ID,
+				"object":   "model",
+				"created":  1677648736,
+				"owned_by": ownedBy,
+			})
+		}
+	case map[string]interface{}:
+		// Handle generic map responses (like from Qwen)
+		if data, ok := v["data"].([]interface{}); ok {
+			for _, model := range data {
+				if modelMap, ok := model.(map[string]interface{}); ok {
+					// Ensure the model has the required fields
+					if _, exists := modelMap["id"]; !exists {
+						// If no id field, skip this model
+						continue
+					}
+					if _, exists := modelMap["object"]; !exists {
+						modelMap["object"] = "model"
+					}
+					if _, exists := modelMap["created"]; !exists {
+						modelMap["created"] = 1677648736
+					}
+					if _, exists := modelMap["owned_by"]; !exists {
+						modelMap["owned_by"] = ownedBy
+					}
+					// Use ID without provider prefix
+					if id, ok := modelMap["id"].(string); ok {
+						if !strings.Contains(id, ":") {
+							modelMap["id"] = id // Use ID without provider prefix
+						}
+					}
+					allModels = append(allModels, modelMap)
+				}
+			}
+		} else {
+			// Handle case where the response is not in the expected format
+			h.logger.ErrorLog("[Provider-Specific Handler] Unexpected models data format for provider %s", h.providerType)
+		}
+	}
+
+	response := map[string]interface{}{
+		"object": "list",
+		"data":   allModels,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(openaiResp); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		h.logger.ErrorLog("[Provider-Specific Handler] Failed to encode models response: %v", err)
 	}
 }
