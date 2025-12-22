@@ -166,6 +166,12 @@ func (a *GeminiAuthenticator) GetToken(ctx context.Context) (string, error) {
 	// Check if token needs refresh (5 minute buffer)
 	if a.credentials.ExpiryDate <= time.Now().Add(5*time.Minute).Unix() {
 		if err := a.refreshToken(ctx); err != nil {
+			a.logger.ErrorLog("[Gemini Auth] Token refresh failed: %v", err)
+			// If refresh fails, the credentials might be invalid, so clear them in memory
+			// This will force loading from file again on next attempt
+			a.mu.Lock()
+			a.credentials = nil
+			a.mu.Unlock()
 			return "", fmt.Errorf("failed to refresh token: %w", err)
 		}
 	}

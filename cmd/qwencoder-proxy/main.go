@@ -72,6 +72,9 @@ func main() {
 	// Register OpenAI-compatible routes
 	proxy.RegisterOpenAIRoutes(http.DefaultServeMux, factory, convFactory)
 
+	// Register provider-specific OpenAI-compatible routes
+	proxy.RegisterProviderSpecificRoutes(http.DefaultServeMux, factory, convFactory)
+
 	// Set up the general proxy handler for all other routes (fallback)
 	http.HandleFunc("/", proxy.ProxyHandler)
 
