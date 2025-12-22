@@ -17,14 +17,14 @@ import (
 
 const (
 	// OAuth constants from reference/iflow.rs
-	AuthURL       = "https://iflow.cn/oauth"
-	TokenURL      = "https://iflow.cn/oauth/token"
-	UserInfoURL   = "https://iflow.cn/api/oauth/getUserInfo"
-	APIKeyURL     = "https://platform.iflow.cn/api/openapi/apikey"
-	ClientID      = "10009311001"
-	ClientSecret  = "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW"
-	DefaultPort   = 11451
-	APIBaseURL    = "https://apis.iflow.cn/v1"
+	AuthURL      = "https://iflow.cn/oauth"
+	TokenURL     = "https://iflow.cn/oauth/token"
+	UserInfoURL  = "https://iflow.cn/api/oauth/getUserInfo"
+	APIKeyURL    = "https://platform.iflow.cn/api/openapi/apikey"
+	ClientID     = "10009311001"
+	ClientSecret = "4Z3YjXycVsQvyGF1etiNlIBB4RsqSDtW"
+	DefaultPort  = 11451
+	APIBaseURL   = "https://apis.iflow.cn/v1"
 )
 
 // SupportedModels lists all supported iFlow models
@@ -34,6 +34,9 @@ var SupportedModels = []string{
 	"qwen3-max",
 	"deepseek-v3.2",
 	"deepseek-r1",
+	"qwen3-vl-plus",
+	"kimi-k2",
+	"kimi-k2-0905",
 }
 
 // Provider implements the provider.Provider interface for iFlow
@@ -138,9 +141,7 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "qwencoder-proxy/1.0")
 
-	p.logger.InfoLog("[iFlow] Sending chat completions request to %s", url)
-	p.logger.InfoLog("[iFlow] Request headers: %v", req.Header)
-	p.logger.InfoLog("[iFlow] Request body: %s", string(reqBody))
+	p.logger.DebugLog("[iFlow] Sending chat completions request to %s", url)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -169,7 +170,6 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		p.logger.ErrorLog("[iFlow] API error details - Status: %d, Headers: %v, Body: %s", resp.StatusCode, resp.Header, string(body))
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -205,9 +205,7 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 	req.Header.Set("Accept", "text/event-stream, application/json")
 	req.Header.Set("User-Agent", "qwencoder-proxy/1.0")
 
-	p.logger.InfoLog("[iFlow] Sending streaming chat completions request to %s", url)
-	p.logger.InfoLog("[iFlow] Request headers: %v", req.Header)
-	p.logger.InfoLog("[iFlow] Request body: %s", string(reqBody))
+	p.logger.DebugLog("[iFlow] Sending streaming chat completions request to %s", url)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -236,7 +234,6 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		p.logger.ErrorLog("[iFlow] API error details - Status: %d, Headers: %v, Body: %s", resp.StatusCode, resp.Header, string(body))
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -259,19 +256,19 @@ type OpenAIModel struct {
 
 // OpenAIChatResponse represents OpenAI chat completion response
 type OpenAIChatResponse struct {
-	ID      string                `json:"id"`
-	Object  string                `json:"object"`
-	Created int64                 `json:"created"`
-	Model   string                `json:"model"`
-	Choices []OpenAIChoice        `json:"choices"`
-	Usage   OpenAIUsage           `json:"usage"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Created int64          `json:"created"`
+	Model   string         `json:"model"`
+	Choices []OpenAIChoice `json:"choices"`
+	Usage   OpenAIUsage    `json:"usage"`
 }
 
 // OpenAIChoice represents a choice in OpenAI response
 type OpenAIChoice struct {
-	Index        int              `json:"index"`
-	Message      OpenAIMessage    `json:"message"`
-	FinishReason string           `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      OpenAIMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 // OpenAIMessage represents a message in OpenAI format
