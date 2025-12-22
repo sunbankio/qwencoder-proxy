@@ -96,10 +96,34 @@ func (p *Provider) IsHealthy(ctx context.Context) bool {
 	return err == nil
 }
 
+// ClearInitializationError clears any cached initialization errors
+func (p *Provider) ClearInitializationError() {
+	p.projectInitError = nil
+}
+
 // ListModels returns available models in native Gemini format
 func (p *Provider) ListModels(ctx context.Context) (interface{}, error) {
-	// For Cloud Code Assist API, we return the supported models directly
-	// since they are fixed and don't need to be fetched from the API
+	// Try to initialize project to get actual models
+	if p.projectID == "" {
+		if err := p.initializeProject(ctx); err != nil {
+			p.logger.DebugLog("[Gemini] Failed to initialize project for model discovery: %v", err)
+			// Fall back to hardcoded models if initialization fails
+			return p.getHardcodedModels(), nil
+		}
+	}
+
+	// Try to discover actual models from the API
+	if actualModels, err := p.discoverModels(ctx); err == nil {
+		return actualModels, nil
+	} else {
+		p.logger.DebugLog("[Gemini] Failed to discover models from API: %v", err)
+		// Fall back to hardcoded models if discovery fails
+		return p.getHardcodedModels(), nil
+	}
+}
+
+// getHardcodedModels returns the hardcoded models as fallback
+func (p *Provider) getHardcodedModels() interface{} {
 	modelsResp := GeminiModelsResponse{
 		Models: []GeminiModel{},
 	}
@@ -113,17 +137,40 @@ func (p *Provider) ListModels(ctx context.Context) (interface{}, error) {
 			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
 		})
 	}
-	return &modelsResp, nil
+	return &modelsResp
+}
+
+// discoverModels attempts to discover actual models from the Gemini API
+func (p *Provider) discoverModels(ctx context.Context) (interface{}, error) {
+	// For now, we'll use the hardcoded models as the Gemini API doesn't have
+	// a public endpoint to list models like the Antigravity API does
+	// In the future, this could be enhanced to call an actual discovery endpoint
+	return p.getHardcodedModels(), nil
 }
 
 // initializeProject discovers or creates a project for the Cloud Code Assist API
 func (p *Provider) initializeProject(ctx context.Context) error {
+	p.logger.DebugLog("[Gemini] Starting project initialization...")
+	
+	// Check if we have cached credentials
+	if p.authenticator.IsAuthenticated() {
+		p.logger.DebugLog("[Gemini] Found valid cached credentials")
+	} else {
+		p.logger.DebugLog("[Gemini] No valid cached credentials found")
+	}
+	
 	token, err := p.authenticator.GetToken(ctx)
 	if err != nil {
 		// Store the error to prevent repeated initialization attempts when auth fails
 		p.projectInitError = err
+		p.logger.ErrorLog("[Gemini] Failed to get token for project initialization: %v", err)
 		return fmt.Errorf("failed to get token for project initialization: %w", err)
 	}
+	
+	p.logger.DebugLog("[Gemini] Successfully obtained access token (length: %d)", len(token))
+	
+	// Clear any previous initialization errors since we got the token successfully
+	p.projectInitError = nil
 
 	// Prepare client metadata for the API call
 	clientMetadata := map[string]interface{}{

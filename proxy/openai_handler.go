@@ -69,6 +69,7 @@ func (h *OpenAIHandler) handleListModels(w http.ResponseWriter, r *http.Request)
 		provider.ProviderGeminiCLI,
 		provider.ProviderKiro,
 		provider.ProviderAntigravity,
+		provider.ProviderIFlow,
 	}
 
 	var allModels []map[string]interface{}
@@ -86,6 +87,11 @@ func (h *OpenAIHandler) handleListModels(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
+		// Refresh the model provider mapping for this provider
+		if refreshErr := h.factory.RefreshProviderModels(r.Context(), providerType); refreshErr != nil {
+			h.logger.ErrorLog("[OpenAI Handler] Failed to refresh provider models for %s: %v", providerType, refreshErr)
+		}
+
 		// Determine the correct owned_by value based on provider type
 		ownedBy := string(providerType)
 		if string(providerType) == "gemini-cli" {
@@ -93,59 +99,52 @@ func (h *OpenAIHandler) handleListModels(w http.ResponseWriter, r *http.Request)
 		}
 		
 		// Handle the response based on its type
-		switch v := modelsData.(type) {
-		case *gemini.GeminiModelsResponse:
-			for _, model := range v.Models {
-				allModels = append(allModels, map[string]interface{}{
-					"id":       model.Name,
-					"object":   "model",
-					"created":  1677648736,
-					"owned_by": ownedBy,
-				})
-			}
-		case *kiro.ClaudeModelsResponse:
-			for _, model := range v.Data {
-				allModels = append(allModels, map[string]interface{}{
-					"id":       model.ID,
-					"object":   "model",
-					"created":  1677648736,
-					"owned_by": ownedBy,
-				})
-			}
-		case map[string]interface{}:
-			// Handle generic map responses (like from Qwen)
-			if data, ok := v["data"].([]interface{}); ok {
-				for _, model := range data {
-					if modelMap, ok := model.(map[string]interface{}); ok {
-						// Ensure the model has the required fields
-						if _, exists := modelMap["id"]; !exists {
-							// If no id field, skip this model
-							continue
-						}
-						if _, exists := modelMap["object"]; !exists {
-							modelMap["object"] = "model"
-						}
-						if _, exists := modelMap["created"]; !exists {
-							modelMap["created"] = 1677648736
-						}
-						if _, exists := modelMap["owned_by"]; !exists {
-							modelMap["owned_by"] = ownedBy
-						}
-						// Use ID without provider prefix
-						if id, ok := modelMap["id"].(string); ok {
-							if !strings.Contains(id, ":") {
-								modelMap["id"] = id // Use ID without provider prefix
-							}
-						}
-						allModels = append(allModels, modelMap)
-					}
+			switch v := modelsData.(type) {
+			case *gemini.GeminiModelsResponse:
+				for _, model := range v.Models {
+					allModels = append(allModels, map[string]interface{}{
+						"id":       model.Name,
+						"object":   "model",
+						"created":  1677648736,
+						"owned_by": ownedBy,
+					})
 				}
-			} else {
-				// Handle case where the response is not in the expected format
-				h.logger.ErrorLog("[OpenAI Handler] Unexpected models data format for provider %s", providerType)
-			}
-		}
-	}
+			case *kiro.ClaudeModelsResponse:
+				for _, model := range v.Data {
+					allModels = append(allModels, map[string]interface{}{
+						"id":       model.ID,
+						"object":   "model",
+						"created":  1677648736,
+						"owned_by": ownedBy,
+					})
+				}
+			case map[string]interface{}:
+				// Handle generic map responses (like from Qwen)
+				if data, ok := v["data"].([]interface{}); ok {
+					for _, model := range data {
+						if modelMap, ok := model.(map[string]interface{}); ok {
+							// Ensure the model has the required fields
+							if _, exists := modelMap["id"]; !exists {
+								// If no id field, skip this model
+								continue
+							}
+							if _, exists := modelMap["object"]; !exists {
+								modelMap["object"] = "model"
+							}
+							if _, exists := modelMap["created"]; !exists {
+								modelMap["created"] = 1677648736
+							}
+							if _, exists := modelMap["owned_by"]; !exists {
+								modelMap["owned_by"] = ownedBy
+							}
+							allModels = append(allModels, modelMap)
+						}
+					}
+				} else {
+					// Handle case where the response is not in the expected format
+					h.logger.ErrorLog("[OpenAI Handler] Unexpected models data format for provider %s", providerType)
+				}
+			}	}
 
 	response := map[string]interface{}{
 		"object": "list",
@@ -188,6 +187,16 @@ func (h *OpenAIHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Log provider selection
+	h.logger.DebugLog("[OpenAI Handler] Selected provider %s for model %s", provider.Name(), model)
+
+	// Check if there's a last successful provider for this model
+	if lastProvider, hasLastSuccess := h.factory.GetLastSuccessProvider(model); hasLastSuccess {
+		h.logger.DebugLog("[OpenAI Handler] Last successful provider for model %s was %s", model, lastProvider)
+	} else {
+		h.logger.DebugLog("[OpenAI Handler] No previous successful provider for model %s", model)
+	}
+
 	// Get the appropriate converter based on the provider's protocol
 	conv, err := h.convFactory.Get(provider.Protocol())
 	if err != nil {
@@ -221,13 +230,56 @@ func (h *OpenAIHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 func (h *OpenAIHandler) handleNonStreamChatCompletions(w http.ResponseWriter, r *http.Request, provider provider.Provider, conv converter.Converter, nativeReq interface{}, model string) {
 	nativeResp, err := provider.GenerateContent(r.Context(), model, nativeReq)
 	if err != nil {
-		h.logger.ErrorLog("[OpenAI Handler] GenerateContent failed: %v", err)
+		h.logger.ErrorLog("[OpenAI Handler] GenerateContent failed with provider %s: %v", provider.Name(), err)
+		
+		// Try to find an alternative provider
+		if altProvider, altErr := h.factory.GetAlternativeProvider(model, provider.Name()); altErr == nil {
+			h.logger.DebugLog("[OpenAI Handler] Retrying with alternative provider %s for model %s", altProvider.Name(), model)
+			
+			// Get converter for the alternative provider
+			altConv, convErr := h.convFactory.Get(altProvider.Protocol())
+			if convErr != nil {
+				h.logger.ErrorLog("[OpenAI Handler] Failed to get converter for alternative provider %s: %v", altProvider.Name(), convErr)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			
+			// Retry with alternative provider using the same native request
+			// Note: This assumes compatible request formats between providers
+			altResp, altErr := altProvider.GenerateContent(r.Context(), model, nativeReq)
+			if altErr != nil {
+				h.logger.ErrorLog("[OpenAI Handler] Alternative provider %s also failed: %v", altProvider.Name(), altErr)
+				http.Error(w, fmt.Sprintf("All providers failed for model %s. Primary error: %v, Alternative error: %v", model, err, altErr), http.StatusInternalServerError)
+				return
+			}
+			
+			// Record success for alternative provider
+			h.factory.RecordSuccess(model, altProvider.Name())
+			h.logger.DebugLog("[OpenAI Handler] Recorded success for alternative provider %s with model %s", altProvider.Name(), model)
+			
+			// Convert response back to OpenAI format
+			openaiResp, convErr := altConv.ToOpenAIResponse(altResp, model)
+			if convErr != nil {
+				h.logger.ErrorLog("[OpenAI Handler] Failed to convert alternative response: %v", convErr)
+				http.Error(w, "Failed to convert response format", http.StatusInternalServerError)
+				return
+			}
+			
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(openaiResp); err != nil {
+				h.logger.ErrorLog("[OpenAI Handler] Failed to encode alternative response: %v", err)
+			}
+			return
+		}
+		
+		h.logger.ErrorLog("[OpenAI Handler] No alternative provider available for model %s", model)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Record success for routing
 	h.factory.RecordSuccess(model, provider.Name())
+	h.logger.DebugLog("[OpenAI Handler] Recorded success for provider %s with model %s", provider.Name(), model)
 
 	// Convert response back to OpenAI format
 	openaiResp, err := conv.ToOpenAIResponse(nativeResp, model)
@@ -256,6 +308,7 @@ func (h *OpenAIHandler) handleStreamChatCompletions(w http.ResponseWriter, r *ht
 
 	// Record success for routing
 	h.factory.RecordSuccess(model, provider.Name())
+	h.logger.DebugLog("[OpenAI Handler] Recorded success for streaming provider %s with model %s", provider.Name(), model)
 
 	// Set streaming headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -413,12 +466,6 @@ func (h *ProviderSpecificHandler) handleListModels(w http.ResponseWriter, r *htt
 					if _, exists := modelMap["owned_by"]; !exists {
 						modelMap["owned_by"] = ownedBy
 					}
-					// Use ID without provider prefix
-					if id, ok := modelMap["id"].(string); ok {
-						if !strings.Contains(id, ":") {
-							modelMap["id"] = id // Use ID without provider prefix
-						}
-					}
 					allModels = append(allModels, modelMap)
 				}
 			}
@@ -501,6 +548,7 @@ func (h *ProviderSpecificHandler) handleNonStreamChatCompletionsWithProvider(w h
 
 	// Record success for routing
 	h.factory.RecordSuccess(model, provider.Name())
+	h.logger.DebugLog("[Provider-Specific Handler] Recorded success for provider %s with model %s", provider.Name(), model)
 
 	// Convert response back to OpenAI format
 	openaiResp, err := conv.ToOpenAIResponse(nativeResp, model)
@@ -529,6 +577,7 @@ func (h *ProviderSpecificHandler) handleStreamChatCompletionsWithProvider(w http
 
 	// Record success for routing
 	h.factory.RecordSuccess(model, provider.Name())
+	h.logger.DebugLog("[Provider-Specific Handler] Recorded success for streaming provider %s with model %s", provider.Name(), model)
 
 	// Set streaming headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -580,4 +629,5 @@ func RegisterProviderSpecificRoutes(mux *http.ServeMux, factory *provider.Factor
 	mux.Handle("/gemini/v1/", NewProviderSpecificHandler(factory, convFactory, provider.ProviderGeminiCLI))
 	mux.Handle("/kiro/v1/", NewProviderSpecificHandler(factory, convFactory, provider.ProviderKiro))
 	mux.Handle("/antigravity/v1/", NewProviderSpecificHandler(factory, convFactory, provider.ProviderAntigravity))
+	mux.Handle("/iflow/v1/", NewProviderSpecificHandler(factory, convFactory, provider.ProviderIFlow))
 }

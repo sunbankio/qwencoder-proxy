@@ -14,6 +14,7 @@ const (
 	ProviderGeminiCLI   ProviderType = "gemini-cli"
 	ProviderKiro        ProviderType = "kiro"
 	ProviderAntigravity ProviderType = "antigravity"
+	ProviderIFlow       ProviderType = "iflow"
 )
 
 // ProtocolType identifies the native API protocol

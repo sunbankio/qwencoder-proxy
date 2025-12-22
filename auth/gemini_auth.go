@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sunbankio/qwencoder-proxy/logging"
+	"golang.org/x/oauth2"
 )
 
 // GeminiOAuthConfig holds the OAuth configuration for Gemini
@@ -94,8 +95,9 @@ func (a *GeminiAuthenticator) IsAuthenticated() bool {
 		a.mu.RLock()
 	}
 
-	// Check if token is still valid (with 5 minute buffer)
-	return a.credentials != nil && a.credentials.ExpiryDate > time.Now().Add(5*time.Minute).Unix()
+	// Check if token is still valid (with 30 minute buffer)
+	buffer := time.Duration(TokenRefreshBufferMs) * time.Millisecond
+	return a.credentials != nil && time.Unix(a.credentials.ExpiryDate, 0).After(time.Now().Add(buffer))
 }
 
 // loadCredentials loads credentials from file
@@ -129,6 +131,10 @@ func (a *GeminiAuthenticator) saveCredentials(creds *GeminiCredentials) error {
 		return fmt.Errorf("failed to marshal credentials: %w", err)
 	}
 
+	// Lock file write operation is handled by OS filesystem locking usually,
+	// but here we ensure process-level safety via the caller holding a.mu.
+	// For added safety we write to temp file and rename.
+	// But sticking to os.WriteFile with 0600 is standard.
 	if err := os.WriteFile(credsPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write credentials file: %w", err)
 	}
@@ -163,16 +169,66 @@ func (a *GeminiAuthenticator) GetToken(ctx context.Context) (string, error) {
 		a.credentials = creds
 	}
 
-	// Check if token needs refresh (5 minute buffer)
-	if a.credentials.ExpiryDate <= time.Now().Add(5*time.Minute).Unix() {
-		if err := a.refreshToken(ctx); err != nil {
-			a.logger.ErrorLog("[Gemini Auth] Token refresh failed: %v", err)
-			// If refresh fails, the credentials might be invalid, so clear them in memory
-			// This will force loading from file again on next attempt
-			a.mu.Lock()
-			a.credentials = nil
-			a.mu.Unlock()
-			return "", fmt.Errorf("failed to refresh token: %w", err)
+	// Convert to oauth2.Token
+	token := &oauth2.Token{
+		AccessToken:  a.credentials.AccessToken,
+		RefreshToken: a.credentials.RefreshToken,
+		TokenType:    a.credentials.TokenType,
+		Expiry:       time.Unix(a.credentials.ExpiryDate, 0),
+	}
+
+	// 30 minute buffer
+	buffer := time.Duration(TokenRefreshBufferMs) * time.Millisecond
+
+	// Setup OAuth2 config
+	conf := &oauth2.Config{
+		ClientID:     a.config.ClientID,
+		ClientSecret: a.config.ClientSecret,
+		Scopes:       []string{a.config.Scope},
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
+			TokenURL: "https://oauth2.googleapis.com/token",
+		},
+	}
+
+	// Create a context with the custom HTTP client
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, a.httpClient)
+
+	// Check if we need to force refresh (if within buffer or expired)
+	if time.Until(token.Expiry) < buffer {
+		a.logger.InfoLog("[Gemini Auth] Token expiring in less than 30m or expired, forcing refresh")
+		// Trick ReuseTokenSource by making the token look expired
+		token.Expiry = time.Now().Add(-1 * time.Second)
+	}
+
+	// Create TokenSource
+	ts := conf.TokenSource(ctx, token)
+
+	// Get token (this will refresh if needed/forced)
+	newToken, err := ts.Token()
+	if err != nil {
+		a.logger.ErrorLog("[Gemini Auth] Token refresh failed: %v", err)
+		// Clear creds on failure so we retry/reload next time
+		a.credentials = nil
+		return "", fmt.Errorf("failed to refresh token: %w", err)
+	}
+
+	// Check if token changed or was refreshed
+	if newToken.AccessToken != a.credentials.AccessToken || newToken.RefreshToken != a.credentials.RefreshToken {
+		a.logger.InfoLog("[Gemini Auth] Token refreshed successfully, saving credentials")
+		
+		a.credentials.AccessToken = newToken.AccessToken
+		// ReuseTokenSource ensures RefreshToken is preserved if not returned
+		a.credentials.RefreshToken = newToken.RefreshToken 
+		a.credentials.TokenType = newToken.TokenType
+		a.credentials.ExpiryDate = newToken.Expiry.Unix()
+		// Scope might update
+		if extraScope, ok := newToken.Extra("scope").(string); ok && extraScope != "" {
+			a.credentials.Scope = extraScope
+		}
+
+		if err := a.saveCredentials(a.credentials); err != nil {
+			a.logger.ErrorLog("Failed to save refreshed credentials: %v", err)
 		}
 	}
 
@@ -184,7 +240,6 @@ func (a *GeminiAuthenticator) ForceRefresh(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Load credentials if not in memory
 	if a.credentials == nil {
 		creds, err := a.loadCredentials()
 		if err != nil {
@@ -193,61 +248,56 @@ func (a *GeminiAuthenticator) ForceRefresh(ctx context.Context) error {
 		a.credentials = creds
 	}
 
-	return a.refreshToken(ctx)
-}
-
-// refreshToken refreshes the access token using the refresh token
-func (a *GeminiAuthenticator) refreshToken(ctx context.Context) error {
-	if a.credentials == nil || a.credentials.RefreshToken == "" {
-		return fmt.Errorf("no refresh token available")
+	// Manually expire token to force refresh in GetToken logic, but here we can just call the refresh logic directly.
+	// We'll reuse the logic we built in GetToken but tailored for just refreshing.
+	// Actually, we can just call GetToken but we need to ensure it refreshes.
+	// Since GetToken now has buffer logic, if we want to FORCE it even if valid > 30m?
+	// Yes, ForceRefresh implies ignoring validity.
+	
+	// Temporarily expire the token in memory
+	originalExpiry := a.credentials.ExpiryDate
+	a.credentials.ExpiryDate = time.Now().Add(-1 * time.Hour).Unix()
+	
+	// Unlock to call GetToken (which locks) - wait, GetToken locks. 
+	// We are holding the lock. We cannot call GetToken.
+	// We have to duplicate the refresh logic or refactor.
+	// Refactoring: extract refresh logic.
+	
+	token := &oauth2.Token{
+		AccessToken:  a.credentials.AccessToken,
+		RefreshToken: a.credentials.RefreshToken,
+		TokenType:    a.credentials.TokenType,
+		Expiry:       time.Now().Add(-1 * time.Second), // Force expired
 	}
 
-	data := url.Values{}
-	data.Set("client_id", a.config.ClientID)
-	data.Set("client_secret", a.config.ClientSecret)
-	data.Set("refresh_token", a.credentials.RefreshToken)
-	data.Set("grant_type", "refresh_token")
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://oauth2.googleapis.com/token", strings.NewReader(data.Encode()))
+	conf := &oauth2.Config{
+		ClientID:     a.config.ClientID,
+		ClientSecret: a.config.ClientSecret,
+		Scopes:       []string{a.config.Scope},
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
+			TokenURL: "https://oauth2.googleapis.com/token",
+		},
+	}
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, a.httpClient)
+	ts := conf.TokenSource(ctx, token)
+	newToken, err := ts.Token()
+	
 	if err != nil {
-		return fmt.Errorf("failed to create refresh request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send refresh request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("token refresh failed with status: %d", resp.StatusCode)
+		a.credentials.ExpiryDate = originalExpiry // Restore if failed
+		return fmt.Errorf("failed to refresh token: %w", err)
 	}
 
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int64  `json:"expires_in"`
-		TokenType   string `json:"token_type"`
-		Scope       string `json:"scope"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return fmt.Errorf("failed to decode refresh response: %w", err)
-	}
-
-	a.credentials.AccessToken = tokenResp.AccessToken
-	a.credentials.ExpiryDate = time.Now().Unix() + tokenResp.ExpiresIn
-	a.credentials.TokenType = tokenResp.TokenType
-	if tokenResp.Scope != "" {
-		a.credentials.Scope = tokenResp.Scope
-	}
-
-	// Save updated credentials
+	a.credentials.AccessToken = newToken.AccessToken
+	a.credentials.RefreshToken = newToken.RefreshToken
+	a.credentials.TokenType = newToken.TokenType
+	a.credentials.ExpiryDate = newToken.Expiry.Unix()
+	
 	if err := a.saveCredentials(a.credentials); err != nil {
 		a.logger.ErrorLog("Failed to save refreshed credentials: %v", err)
 	}
-
-	a.logger.DebugLog("[Gemini Auth] Token refreshed successfully")
+	
+	a.logger.InfoLog("[Gemini Auth] Token forced refresh successful")
 	return nil
 }
 

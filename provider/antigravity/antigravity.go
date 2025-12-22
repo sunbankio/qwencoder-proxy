@@ -133,6 +133,8 @@ func (p *Provider) SupportsModel(model string) bool {
 		return true
 	}
 
+	// No prefix checks needed - the factory will handle model-to-provider mapping
+
 	for _, m := range SupportedModels {
 		if strings.EqualFold(m, model) {
 			return true

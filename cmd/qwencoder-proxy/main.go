@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"github.com/sunbankio/qwencoder-proxy/provider"
 	"github.com/sunbankio/qwencoder-proxy/provider/antigravity"
 	"github.com/sunbankio/qwencoder-proxy/provider/gemini"
+	iflowProvider "github.com/sunbankio/qwencoder-proxy/provider/iflow"
 	"github.com/sunbankio/qwencoder-proxy/provider/kiro"
 	"github.com/sunbankio/qwencoder-proxy/provider/qwen"
 	"github.com/sunbankio/qwencoder-proxy/qwenclient"
@@ -62,8 +64,30 @@ func main() {
 	antigravityProvider := antigravity.NewProvider(antigravityAuth)
 	factory.Register(antigravityProvider)
 
+	// Register iFlow provider
+	iflowAuth := iflowProvider.NewAuthenticator(nil)
+	iflowProvider := iflowProvider.NewProvider(iflowAuth)
+	factory.Register(iflowProvider)
+
 	// Create converter factory
 	convFactory := converter.NewFactory()
+
+	// Populate model providers mapping at startup
+	log.Println("Populating model providers mapping...")
+	if err := factory.PopulateModelProviders(context.Background()); err != nil {
+		log.Printf("Warning: Failed to populate model providers: %v", err)
+	} else {
+		// Log the available models and their providers
+		allModels := factory.GetAllModels()
+		log.Printf("Successfully populated %d models:", len(allModels))
+		for model, providers := range allModels {
+			providerNames := make([]string, len(providers))
+			for i, p := range providers {
+				providerNames[i] = string(p)
+			}
+			log.Printf("  - %s: %v", model, providerNames)
+		}
+	}
 
 	// Register native format routes
 	proxy.RegisterGeminiRoutes(http.DefaultServeMux, factory)
@@ -105,6 +129,34 @@ func main() {
 		}
 	} else {
 		log.Println("Credentials found and valid. Starting proxy server...")
+	}
+
+	// Check other providers credentials on startup
+	ctx := context.Background()
+	log.Println("Checking other providers credentials validity and refreshing if needed...")
+
+	// Gemini
+	log.Println("Checking Gemini credentials...")
+	if _, err := geminiProvider.GetAuthenticator().GetToken(ctx); err != nil {
+		log.Printf("Warning: Gemini credentials check failed: %v", err)
+	} else {
+		log.Println("Gemini credentials are valid.")
+	}
+
+	// Kiro
+	log.Println("Checking Kiro credentials...")
+	if _, err := kiroProvider.GetAuthenticator().GetToken(ctx); err != nil {
+		log.Printf("Warning: Kiro credentials check failed: %v", err)
+	} else {
+		log.Println("Kiro credentials are valid.")
+	}
+
+	// Antigravity
+	log.Println("Checking Antigravity credentials...")
+	if _, err := antigravityProvider.GetAuthenticator().GetToken(ctx); err != nil {
+		log.Printf("Warning: Antigravity credentials check failed: %v", err)
+	} else {
+		log.Println("Antigravity credentials are valid.")
 	}
 
 	// Start the server

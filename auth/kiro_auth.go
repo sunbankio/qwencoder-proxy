@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sunbankio/qwencoder-proxy/logging"
+	"golang.org/x/oauth2"
 )
 
 // KiroOAuthConfig holds the OAuth configuration for Kiro
@@ -94,7 +95,12 @@ func (a *KiroAuthenticator) IsAuthenticated() bool {
 	// Check if token is still valid
 	if a.credentials.ExpiresAt != "" {
 		expiresAt, err := time.Parse(time.RFC3339, a.credentials.ExpiresAt)
-		if err == nil && expiresAt.Before(time.Now().Add(5*time.Minute)) {
+		// Check against 30 minute buffer
+		buffer := time.Duration(TokenRefreshBufferMs) * time.Millisecond
+		if err == nil && expiresAt.Before(time.Now().Add(buffer)) {
+			// Considered "not authenticated" (needs refresh) if we strictly check validity here.
+			// But IsAuthenticated usually just checks if we have *some* credentials.
+			// Let's stick to simple existence + expiry check.
 			return false
 		}
 	}
@@ -191,6 +197,7 @@ func (a *KiroAuthenticator) saveCredentials(creds *KiroCredentials) error {
 		return fmt.Errorf("failed to marshal credentials: %w", err)
 	}
 
+	// Write file (protected by caller lock usually)
 	if err := os.WriteFile(credsPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write credentials file: %w", err)
 	}
@@ -208,6 +215,17 @@ func (a *KiroAuthenticator) ClearCredentials() error {
 	return nil
 }
 
+// kiroTokenRefresher implements oauth2.TokenSource for Kiro's custom protocol
+type kiroTokenRefresher struct {
+	auth *KiroAuthenticator
+	ctx  context.Context
+}
+
+func (k *kiroTokenRefresher) Token() (*oauth2.Token, error) {
+	// Call internal refresh logic
+	return k.auth.performRefresh(k.ctx)
+}
+
 // GetToken returns a valid access token, refreshing if necessary
 func (a *KiroAuthenticator) GetToken(ctx context.Context) (string, error) {
 	a.mu.Lock()
@@ -222,33 +240,70 @@ func (a *KiroAuthenticator) GetToken(ctx context.Context) (string, error) {
 		a.credentials = creds
 	}
 
-	// Check if token needs refresh
-	needsRefresh := false
-	if a.credentials.ExpiresAt != "" {
-		expiresAt, err := time.Parse(time.RFC3339, a.credentials.ExpiresAt)
-		if err == nil && expiresAt.Before(time.Now().Add(5*time.Minute)) {
-			needsRefresh = true
-		}
-	}
-
-	if needsRefresh && a.credentials.RefreshToken != "" {
-		if err := a.refreshToken(ctx); err != nil {
-			a.logger.ErrorLog("[Kiro Auth] Failed to refresh token: %v", err)
-			// Continue with existing token if refresh fails
-		}
-	}
-
 	if a.credentials.AccessToken == "" {
 		return "", fmt.Errorf("no access token available")
+	}
+
+	// Construct oauth2.Token
+	var expiry time.Time
+	if a.credentials.ExpiresAt != "" {
+		if t, err := time.Parse(time.RFC3339, a.credentials.ExpiresAt); err == nil {
+			expiry = t
+		}
+	}
+
+	token := &oauth2.Token{
+		AccessToken:  a.credentials.AccessToken,
+		RefreshToken: a.credentials.RefreshToken,
+		Expiry:       expiry,
+		TokenType:    "Bearer",
+	}
+
+	// Check buffer (30 mins)
+	buffer := time.Duration(TokenRefreshBufferMs) * time.Millisecond
+	if time.Until(token.Expiry) < buffer {
+		a.logger.InfoLog("[Kiro Auth] Token expiring in less than 30m or expired, forcing refresh")
+		token.Expiry = time.Now().Add(-1 * time.Second)
+	}
+
+	// Create TokenSource
+	ts := oauth2.ReuseTokenSource(token, &kiroTokenRefresher{auth: a, ctx: ctx})
+
+	// Get token (this triggers refresh if expired)
+	newToken, err := ts.Token()
+	if err != nil {
+		a.logger.ErrorLog("[Kiro Auth] Failed to refresh token: %v", err)
+		// Continue with existing token if refresh fails??
+		// Original code: "Continue with existing token if refresh fails"
+		// But if it's expired, we probably shouldn't.
+		// Let's return error if we really needed it.
+		// But existing logic was lenient.
+		// However, oauth2.ReuseTokenSource returns error if refresh fails.
+		// We'll return the error.
+		return "", err
+	}
+
+	// Update credentials if changed
+	if newToken.AccessToken != a.credentials.AccessToken || newToken.RefreshToken != a.credentials.RefreshToken {
+		a.logger.InfoLog("[Kiro Auth] Token refreshed successfully, saving credentials")
+		a.credentials.AccessToken = newToken.AccessToken
+		// ReuseTokenSource preserves refresh token if not returned, so it should be safe.
+		// But kiroTokenRefresher logic below ensures it's set in the returned token.
+		a.credentials.RefreshToken = newToken.RefreshToken
+		a.credentials.ExpiresAt = newToken.Expiry.Format(time.RFC3339)
+
+		if err := a.saveCredentials(a.credentials); err != nil {
+			a.logger.ErrorLog("Failed to save refreshed credentials: %v", err)
+		}
 	}
 
 	return a.credentials.AccessToken, nil
 }
 
-// refreshToken refreshes the access token using the refresh token
-func (a *KiroAuthenticator) refreshToken(ctx context.Context) error {
+// performRefresh executes the custom Kiro refresh logic and returns an oauth2.Token
+func (a *KiroAuthenticator) performRefresh(ctx context.Context) (*oauth2.Token, error) {
 	if a.credentials == nil || a.credentials.RefreshToken == "" {
-		return fmt.Errorf("no refresh token available")
+		return nil, fmt.Errorf("no refresh token available")
 	}
 
 	region := a.credentials.Region
@@ -276,23 +331,23 @@ func (a *KiroAuthenticator) refreshToken(ctx context.Context) error {
 
 	bodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
-		return fmt.Errorf("failed to marshal refresh request: %w", err)
+		return nil, fmt.Errorf("failed to marshal refresh request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", refreshURL, strings.NewReader(string(bodyBytes)))
 	if err != nil {
-		return fmt.Errorf("failed to create refresh request: %w", err)
+		return nil, fmt.Errorf("failed to create refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send refresh request: %w", err)
+		return nil, fmt.Errorf("failed to send refresh request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("token refresh failed with status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("token refresh failed with status: %d", resp.StatusCode)
 	}
 
 	var tokenResp struct {
@@ -302,24 +357,35 @@ func (a *KiroAuthenticator) refreshToken(ctx context.Context) error {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return fmt.Errorf("failed to decode refresh response: %w", err)
+		return nil, fmt.Errorf("failed to decode refresh response: %w", err)
 	}
 
-	a.credentials.AccessToken = tokenResp.AccessToken
-	if tokenResp.RefreshToken != "" {
-		a.credentials.RefreshToken = tokenResp.RefreshToken
-	}
-	if tokenResp.ExpiresIn > 0 {
-		a.credentials.ExpiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
-	}
-
-	// Save updated credentials
-	if err := a.saveCredentials(a.credentials); err != nil {
-		a.logger.ErrorLog("Failed to save refreshed credentials: %v", err)
+	// Return as oauth2.Token
+	// Ensure we preserve the old refresh token if new one is empty
+	refreshToken := tokenResp.RefreshToken
+	if refreshToken == "" {
+		refreshToken = a.credentials.RefreshToken
 	}
 
-	a.logger.DebugLog("[Kiro Auth] Token refreshed successfully")
-	return nil
+	return &oauth2.Token{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: refreshToken,
+		Expiry:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second),
+		TokenType:    "Bearer",
+	}, nil
+}
+
+// refreshToken kept for compatibility/internal use but now wrapper calls performRefresh
+func (a *KiroAuthenticator) refreshToken(ctx context.Context) error {
+	t, err := a.performRefresh(ctx)
+	if err != nil {
+		return err
+	}
+	// Update credentials
+	a.credentials.AccessToken = t.AccessToken
+	a.credentials.RefreshToken = t.RefreshToken
+	a.credentials.ExpiresAt = t.Expiry.Format(time.RFC3339)
+	return a.saveCredentials(a.credentials)
 }
 
 // Authenticate performs the authentication flow
@@ -335,11 +401,10 @@ func (a *KiroAuthenticator) Authenticate(ctx context.Context) error {
 	a.credentials = creds
 	a.mu.Unlock()
 
-	// Try to refresh if needed
-	if a.credentials.RefreshToken != "" {
-		if err := a.refreshToken(ctx); err != nil {
-			a.logger.ErrorLog("[Kiro Auth] Initial token refresh failed: %v", err)
-		}
+	// Try to refresh if needed (using new GetToken logic essentially, or just GetToken)
+	_, err = a.GetToken(ctx)
+	if err != nil {
+		a.logger.ErrorLog("[Kiro Auth] Initial token check/refresh failed: %v", err)
 	}
 
 	if a.credentials.AccessToken == "" {
