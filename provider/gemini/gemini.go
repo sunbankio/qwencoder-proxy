@@ -274,18 +274,30 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
 		}
 	}
+	// Check if this is already a Cloud Code Assist API formatted request
+	// by checking if it has the expected fields for the Cloud Code Assist API
+	_, hasModel := requestMap["model"]
+	_, hasProject := requestMap["project"]
+	_, hasRequest := requestMap["request"]
 
-	// Format the request for Cloud Code Assist API
-	cloudCodeRequest := map[string]interface{}{
-		"model": model,
-		"project": p.projectID,
-		"request": requestMap,
+	var reqBody []byte
+	var marshalErr error
+	if hasModel && hasProject && hasRequest {
+		// This is already a Cloud Code Assist API formatted request
+		// Just update the project ID
+		requestMap["project"] = p.projectID
+		reqBody, marshalErr = json.Marshal(requestMap)
+	} else {
+		// This is a standard Gemini API request, format it for Cloud Code Assist API
+		cloudCodeRequest := map[string]interface{}{
+			"model": model,
+			"project": p.projectID,
+			"request": requestMap,
+		}
+		reqBody, marshalErr = json.Marshal(cloudCodeRequest)
 	}
-
-	// Marshal the Cloud Code Assist API request
-	reqBody, err := json.Marshal(cloudCodeRequest)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", marshalErr)
 	}
 
 	url := fmt.Sprintf("%s:generateContent", p.baseURL)
@@ -310,9 +322,28 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
+	// The Cloud Code Assist API returns responses wrapped in a "response" field
+	var rawResponse map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&rawResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Extract the actual Gemini response from the "response" field
+	responseData, ok := rawResponse["response"].(map[string]interface{})
+	if !ok {
+		// If there's no "response" wrapper, use the raw response as-is
+		responseData = rawResponse
+	}
+
+	// Convert back to JSON and then decode to GeminiResponse
+	responseJSON, err := json.Marshal(responseData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal response data: %w", err)
+	}
+
+	var geminiResp GeminiResponse
+	if err := json.Unmarshal(responseJSON, &geminiResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal Gemini response: %w", err)
 	}
 
 	return &geminiResp, nil
@@ -345,15 +376,31 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 		}
 	}
 
-	// Format the request for Cloud Code Assist API
-	cloudCodeRequest := map[string]interface{}{
-		"model": model,
-		"project": p.projectID,
-		"request": requestMap,
-	}
+	// Check if this is already a Cloud Code Assist API formatted request
+	// by checking if it has the expected fields for the Cloud Code Assist API
+	_, hasModel := requestMap["model"]
+	_, hasProject := requestMap["project"]
+	_, hasRequest := requestMap["request"]
 
-	// Marshal the Cloud Code Assist API request
-	reqBody, err := json.Marshal(cloudCodeRequest)
+	var reqBody []byte
+	var marshalErr error
+	if hasModel && hasProject && hasRequest {
+		// This is already a Cloud Code Assist API formatted request
+		// Just update the project ID
+		requestMap["project"] = p.projectID
+		reqBody, marshalErr = json.Marshal(requestMap)
+	} else {
+		// This is a standard Gemini API request, format it for Cloud Code Assist API
+		cloudCodeRequest := map[string]interface{}{
+			"model": model,
+			"project": p.projectID,
+			"request": requestMap,
+		}
+		reqBody, marshalErr = json.Marshal(cloudCodeRequest)
+	}
+	if marshalErr != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", marshalErr)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}

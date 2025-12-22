@@ -20,6 +20,39 @@ These endpoints work with all providers using OpenAI-compatible format:
 curl -X GET http://localhost:8143/v1/models
 ```
 
+### Chat Completions (Model-Specific Examples)
+```bash
+# Using Qwen models
+curl -X POST http://localhost:8143/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "model": "qwen-max",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Hello, how are you?"
+      }
+    ],
+    "temperature": 0.7
+  }'
+
+# Using Qwen Coder models
+curl -X POST http://localhost:8143/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "model": "qwen3-coder-plus",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Write a simple Go function to calculate factorial."
+      }
+    ],
+    "temperature": 0.7
+  }'
+```
+
 ### Chat Completions (Generic - Provider Selected by Model)
 ```bash
 # Using Qwen model
@@ -39,13 +72,12 @@ curl -X POST http://localhost:8143/v1/chat/completions \
 # Using Gemini model
 curl -X POST http://localhost:8143/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
     "model": "gemini-2.5-flash",
     "messages": [
       {
         "role": "user",
-        "content": "Explain quantum computing in simple terms."
+        "content": "Say hello in three languages."
       }
     ],
     "temperature": 0.7
@@ -71,7 +103,6 @@ curl -X POST http://localhost:8143/v1/chat/completions \
 ```bash
 curl -X POST http://localhost:8143/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
     "model": "gemini-2.5-flash",
     "messages": [
@@ -96,7 +127,6 @@ curl -X GET http://localhost:8143/gemini/models
 ```bash
 curl -X POST http://localhost:8143/gemini/models/gemini-2.5-flash:generateContent \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
     "contents": [
       {
@@ -113,6 +143,7 @@ curl -X POST http://localhost:8143/gemini/models/gemini-2.5-flash:generateConten
       "maxOutputTokens": 500
     }
   }'
+
 ```
 
 ### Stream Generate Content
