@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sunbankio/qwencoder-proxy/auth"
@@ -65,6 +66,8 @@ type Provider struct {
 	logger          *logging.Logger
 	projectID       string
 	isInitialized   bool
+	cachedModels    map[string]bool
+	cacheMu         sync.RWMutex
 }
 
 // NewProvider creates a new Antigravity provider
@@ -85,6 +88,7 @@ func NewProvider(authenticator *auth.GeminiAuthenticator) *Provider {
 		authenticator:   authenticator,
 		httpClient:      &http.Client{Timeout: 5 * time.Minute},
 		logger:          logging.NewLogger(),
+		cachedModels:    make(map[string]bool),
 	}
 }
 
@@ -100,7 +104,49 @@ func (p *Provider) Protocol() provider.ProtocolType {
 
 // SupportedModels returns list of supported model IDs
 func (p *Provider) SupportedModels() []string {
-	return SupportedModels
+	p.cacheMu.RLock()
+	defer p.cacheMu.RUnlock()
+
+	models := make([]string, 0, len(SupportedModels)+len(p.cachedModels))
+	models = append(models, SupportedModels...)
+	for m := range p.cachedModels {
+		found := false
+		for _, sm := range SupportedModels {
+			if sm == m {
+				found = true
+				break
+			}
+		}
+		if !found {
+			models = append(models, m)
+		}
+	}
+	return models
+}
+
+// SupportsModel checks if the provider supports the given model
+func (p *Provider) SupportsModel(model string) bool {
+	modelLower := strings.ToLower(model)
+
+	// Check static list and prefixes
+	if strings.HasPrefix(modelLower, "gemini-") {
+		return true
+	}
+
+	for _, m := range SupportedModels {
+		if strings.EqualFold(m, model) {
+			return true
+		}
+	}
+
+	// Check dynamic cache
+	p.cacheMu.RLock()
+	defer p.cacheMu.RUnlock()
+	if p.cachedModels[model] {
+		return true
+	}
+
+	return false
 }
 
 // GetAuthenticator returns the auth handler for this provider
@@ -264,6 +310,13 @@ func (p *Provider) ListModels(ctx context.Context) (interface{}, error) {
 	} else {
 		p.logger.ErrorLog("[Antigravity] No models field found in response: %+v", rawResponse)
 	}
+
+	// Update dynamic cache
+	p.cacheMu.Lock()
+	for _, m := range updatedResp.Models {
+		p.cachedModels[m.Name] = true
+	}
+	p.cacheMu.Unlock()
 
 	return updatedResp, nil
 }

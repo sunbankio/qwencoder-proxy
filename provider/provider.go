@@ -37,6 +37,9 @@ type Provider interface {
 	// SupportedModels returns list of supported model IDs
 	SupportedModels() []string
 
+	// SupportsModel checks if the provider supports the given model
+	SupportsModel(model string) bool
+
 	// GenerateContent handles non-streaming requests with native format
 	// The request and response are in the provider's native format
 	GenerateContent(ctx context.Context, model string, request interface{}) (interface{}, error)

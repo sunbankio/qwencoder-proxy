@@ -93,6 +93,20 @@ func (p *Provider) SupportedModels() []string {
 	return SupportedModels
 }
 
+// SupportsModel checks if the provider supports the given model
+func (p *Provider) SupportsModel(model string) bool {
+	modelLower := strings.ToLower(model)
+	if strings.HasPrefix(modelLower, "claude-") {
+		return true
+	}
+	for _, m := range SupportedModels {
+		if strings.EqualFold(m, model) {
+			return true
+		}
+	}
+	return false
+}
+
 // GetAuthenticator returns the auth handler for this provider
 func (p *Provider) GetAuthenticator() provider.Authenticator {
 	return p.authenticator

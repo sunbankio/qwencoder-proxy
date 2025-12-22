@@ -226,6 +226,9 @@ func (h *OpenAIHandler) handleNonStreamChatCompletions(w http.ResponseWriter, r 
 		return
 	}
 
+	// Record success for routing
+	h.factory.RecordSuccess(model, provider.Name())
+
 	// Convert response back to OpenAI format
 	openaiResp, err := conv.ToOpenAIResponse(nativeResp, model)
 	if err != nil {
@@ -250,6 +253,9 @@ func (h *OpenAIHandler) handleStreamChatCompletions(w http.ResponseWriter, r *ht
 		return
 	}
 	defer stream.Close()
+
+	// Record success for routing
+	h.factory.RecordSuccess(model, provider.Name())
 
 	// Set streaming headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -493,6 +499,9 @@ func (h *ProviderSpecificHandler) handleNonStreamChatCompletionsWithProvider(w h
 		return
 	}
 
+	// Record success for routing
+	h.factory.RecordSuccess(model, provider.Name())
+
 	// Convert response back to OpenAI format
 	openaiResp, err := conv.ToOpenAIResponse(nativeResp, model)
 	if err != nil {
@@ -517,6 +526,9 @@ func (h *ProviderSpecificHandler) handleStreamChatCompletionsWithProvider(w http
 		return
 	}
 	defer stream.Close()
+
+	// Record success for routing
+	h.factory.RecordSuccess(model, provider.Name())
 
 	// Set streaming headers
 	w.Header().Set("Content-Type", "text/event-stream")

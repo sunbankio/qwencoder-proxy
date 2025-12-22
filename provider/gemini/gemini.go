@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sunbankio/qwencoder-proxy/auth"
@@ -67,6 +68,20 @@ func (p *Provider) Protocol() provider.ProtocolType {
 // SupportedModels returns list of supported model IDs
 func (p *Provider) SupportedModels() []string {
 	return SupportedModels
+}
+
+// SupportsModel checks if the provider supports the given model
+func (p *Provider) SupportsModel(model string) bool {
+	modelLower := strings.ToLower(model)
+	if strings.HasPrefix(modelLower, "gemini-") {
+		return true
+	}
+	for _, m := range SupportedModels {
+		if strings.EqualFold(m, model) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetAuthenticator returns the auth handler for this provider
