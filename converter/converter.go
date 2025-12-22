@@ -34,6 +34,7 @@ func NewFactory() *Factory {
 	f.Register(NewOpenAIConverter())
 	f.Register(NewGeminiConverter())
 	f.Register(NewClaudeConverter())
+	f.Register(NewQwenConverter())
 	return f
 }
 

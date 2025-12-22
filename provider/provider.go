@@ -23,6 +23,7 @@ const (
 	ProtocolOpenAI ProtocolType = "openai"
 	ProtocolGemini ProtocolType = "gemini"
 	ProtocolClaude ProtocolType = "claude"
+	ProtocolQwen   ProtocolType = "qwen"
 )
 
 // Provider defines the interface for LLM providers
