@@ -179,6 +179,23 @@ func (a *GeminiAuthenticator) GetToken(ctx context.Context) (string, error) {
 	return a.credentials.AccessToken, nil
 }
 
+// ForceRefresh forces a token refresh regardless of expiry
+func (a *GeminiAuthenticator) ForceRefresh(ctx context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Load credentials if not in memory
+	if a.credentials == nil {
+		creds, err := a.loadCredentials()
+		if err != nil {
+			return fmt.Errorf("credentials not found: %w", err)
+		}
+		a.credentials = creds
+	}
+
+	return a.refreshToken(ctx)
+}
+
 // refreshToken refreshes the access token using the refresh token
 func (a *GeminiAuthenticator) refreshToken(ctx context.Context) error {
 	if a.credentials == nil || a.credentials.RefreshToken == "" {

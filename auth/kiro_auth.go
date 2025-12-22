@@ -352,8 +352,30 @@ func (a *KiroAuthenticator) Authenticate(ctx context.Context) error {
 
 // GetRegion returns the configured region
 func (a *KiroAuthenticator) GetRegion() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	if a.credentials != nil && a.credentials.Region != "" {
 		return a.credentials.Region
 	}
 	return a.config.Region
+}
+
+// GetAuthMethod returns the authentication method used
+func (a *KiroAuthenticator) GetAuthMethod() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.credentials != nil {
+		return a.credentials.AuthMethod
+	}
+	return ""
+}
+
+// GetProfileArn returns the profile ARN if available
+func (a *KiroAuthenticator) GetProfileArn() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.credentials != nil {
+		return a.credentials.ProfileArn
+	}
+	return ""
 }
