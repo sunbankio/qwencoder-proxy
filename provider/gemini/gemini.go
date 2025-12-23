@@ -34,11 +34,11 @@ var SupportedModels = []string{
 
 // Provider implements the provider.Provider interface for Gemini CLI
 type Provider struct {
-	baseURL       string
-	authenticator *auth.GeminiAuthenticator
-	httpClient    *http.Client
-	logger        *logging.Logger
-	projectID     string
+	baseURL          string
+	authenticator    *auth.GeminiAuthenticator
+	httpClient       *http.Client
+	logger           *logging.Logger
+	projectID        string
 	projectInitError error // Store any initialization error to prevent repeated attempts
 }
 
@@ -129,11 +129,11 @@ func (p *Provider) getHardcodedModels() interface{} {
 	}
 	for _, modelID := range SupportedModels {
 		modelsResp.Models = append(modelsResp.Models, GeminiModel{
-			Name:        modelID,
-			DisplayName: modelID,
-			Description: fmt.Sprintf("A generative model for text and chat generation. ID: %s", modelID),
-			InputTokenLimit: 32768,
-			OutputTokenLimit: 8192,
+			Name:                       modelID,
+			DisplayName:                modelID,
+			Description:                fmt.Sprintf("A generative model for text and chat generation. ID: %s", modelID),
+			InputTokenLimit:            32768,
+			OutputTokenLimit:           8192,
 			SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
 		})
 	}
@@ -151,14 +151,14 @@ func (p *Provider) discoverModels(ctx context.Context) (interface{}, error) {
 // initializeProject discovers or creates a project for the Cloud Code Assist API
 func (p *Provider) initializeProject(ctx context.Context) error {
 	p.logger.DebugLog("[Gemini] Starting project initialization...")
-	
+
 	// Check if we have cached credentials
 	if p.authenticator.IsAuthenticated() {
 		p.logger.DebugLog("[Gemini] Found valid cached credentials")
 	} else {
 		p.logger.DebugLog("[Gemini] No valid cached credentials found")
 	}
-	
+
 	token, err := p.authenticator.GetToken(ctx)
 	if err != nil {
 		// Store the error to prevent repeated initialization attempts when auth fails
@@ -166,18 +166,18 @@ func (p *Provider) initializeProject(ctx context.Context) error {
 		p.logger.ErrorLog("[Gemini] Failed to get token for project initialization: %v", err)
 		return fmt.Errorf("failed to get token for project initialization: %w", err)
 	}
-	
+
 	p.logger.DebugLog("[Gemini] Successfully obtained access token (length: %d)", len(token))
-	
+
 	// Clear any previous initialization errors since we got the token successfully
 	p.projectInitError = nil
 
 	// Prepare client metadata for the API call
 	clientMetadata := map[string]interface{}{
-		"ideType":      "IDE_UNSPECIFIED",
-		"platform":     "PLATFORM_UNSPECIFIED",
-		"pluginType":   "GEMINI",
-		"duetProject":  "",
+		"ideType":     "IDE_UNSPECIFIED",
+		"platform":    "PLATFORM_UNSPECIFIED",
+		"pluginType":  "GEMINI",
+		"duetProject": "",
 	}
 
 	// Prepare the loadCodeAssist request
@@ -364,7 +364,7 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 	} else {
 		// This is a standard Gemini API request, format it for Cloud Code Assist API
 		finalRequest = map[string]interface{}{
-			"model": model,
+			"model":   model,
 			"project": p.projectID,
 			"request": requestMap,
 		}
@@ -393,14 +393,14 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusBadRequest {
+	if resp.StatusCode == http.StatusUnauthorized {
 		// Try to refresh the token and retry the request once, following the JavaScript reference implementation
 		p.logger.DebugLog("[Gemini] Received %d, attempting to refresh token and retry", resp.StatusCode)
-		
+
 		// Read and close the original response body
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		
+
 		// Refresh the token by calling initializeAuth with force refresh
 		// We need to implement a method to force refresh the token
 		_, refreshErr := p.authenticator.GetToken(ctx)
@@ -408,39 +408,39 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 			p.logger.ErrorLog("[Gemini] Token refresh failed: %v", refreshErr)
 			return nil, fmt.Errorf("API error (status %d) and token refresh failed: %s", resp.StatusCode, string(bodyBytes))
 		}
-		
+
 		// Retry the request with the refreshed token
 		// Recreate the request body with the same finalRequest
 		retryReqBody, marshalErr := json.Marshal(finalRequest)
 		if marshalErr != nil {
 			return nil, fmt.Errorf("failed to marshal request for retry: %w", marshalErr)
 		}
-		
+
 		retryReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(retryReqBody))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create retry request: %w", err)
 		}
-		
+
 		// Get the potentially updated token
 		refreshedToken, tokenErr := p.authenticator.GetToken(ctx)
 		if tokenErr != nil {
 			return nil, fmt.Errorf("failed to get refreshed token: %w", tokenErr)
 		}
-		
+
 		retryReq.Header.Set("Authorization", "Bearer "+refreshedToken)
 		retryReq.Header.Set("Content-Type", "application/json")
-		
+
 		retryResp, err := p.httpClient.Do(retryReq)
 		if err != nil {
 			return nil, fmt.Errorf("failed to send retry request: %w", err)
 		}
 		defer retryResp.Body.Close()
-		
+
 		if retryResp.StatusCode != http.StatusOK {
 			retryBody, _ := io.ReadAll(retryResp.Body)
 			return nil, fmt.Errorf("retry failed with API error (status %d): %s", retryResp.StatusCode, string(retryBody))
 		}
-		
+
 		resp = retryResp // Use the successful retry response
 	} else if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -517,7 +517,7 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 	} else {
 		// This is a standard Gemini API request, format it for Cloud Code Assist API
 		finalRequest = map[string]interface{}{
-			"model": model,
+			"model":   model,
 			"project": p.projectID,
 			"request": requestMap,
 		}
@@ -547,54 +547,54 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusBadRequest {
+	if resp.StatusCode == http.StatusUnauthorized {
 		// Try to refresh the token and retry the request once, following the JavaScript reference implementation
 		p.logger.DebugLog("[Gemini] Received %d, attempting to refresh token and retry", resp.StatusCode)
-		
+
 		// Read and close the original response body
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		
+
 		// Refresh the token by calling GetToken which handles refresh internally
 		_, refreshErr := p.authenticator.GetToken(ctx)
 		if refreshErr != nil {
 			p.logger.ErrorLog("[Gemini] Token refresh failed: %v", refreshErr)
 			return nil, fmt.Errorf("API error (status %d) and token refresh failed: %s", resp.StatusCode, string(bodyBytes))
 		}
-		
+
 		// Retry the request with the refreshed token
 		// Recreate the request body with the same finalRequest
 		retryReqBody, marshalErr := json.Marshal(finalRequest)
 		if marshalErr != nil {
 			return nil, fmt.Errorf("failed to marshal request for retry: %w", marshalErr)
 		}
-		
+
 		retryReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(retryReqBody))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create retry request: %w", err)
 		}
-		
+
 		// Get the potentially updated token
 		refreshedToken, tokenErr := p.authenticator.GetToken(ctx)
 		if tokenErr != nil {
 			return nil, fmt.Errorf("failed to get refreshed token: %w", tokenErr)
 		}
-		
+
 		retryReq.Header.Set("Authorization", "Bearer "+refreshedToken)
 		retryReq.Header.Set("Content-Type", "application/json")
 		retryReq.Header.Set("Accept", "text/event-stream")
-		
+
 		retryResp, err := p.httpClient.Do(retryReq)
 		if err != nil {
 			return nil, fmt.Errorf("failed to send retry request: %w", err)
 		}
-		
+
 		if retryResp.StatusCode != http.StatusOK {
 			retryBody, _ := io.ReadAll(retryResp.Body)
 			retryResp.Body.Close()
 			return nil, fmt.Errorf("retry failed with API error (status %d): %s", retryResp.StatusCode, string(retryBody))
 		}
-		
+
 		return retryResp.Body, nil
 	} else if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
