@@ -90,12 +90,75 @@ func (c *GeminiConverter) ToOpenAIResponse(native interface{}, model string) (in
 
 // ToOpenAIStreamChunk converts Gemini format to OpenAI format for streaming
 func (c *GeminiConverter) ToOpenAIStreamChunk(native interface{}, model string) (interface{}, error) {
-	// For streaming, we need to convert the SSE data
-	// This is more complex and would require parsing the SSE stream
-	// For now, return as-is but in a proper implementation, this would convert each chunk
-	return native, nil
-}
+	geminiResp, ok := native.(*gemini.GeminiResponse)
+	if !ok {
+		// Try to convert from map
+		if data, ok := native.(map[string]interface{}); ok {
+			jsonBytes, _ := json.Marshal(data)
+			geminiResp = &gemini.GeminiResponse{}
+			json.Unmarshal(jsonBytes, geminiResp)
+		} else {
+			return nil, fmt.Errorf("unexpected response type: %T", native)
+		}
+	}
 
+	openAIChunk := map[string]interface{}{
+		"id":      "chatcmpl-stream", // ID should be consistent, but stateless converter can't guarantee. Fixed placeholder or caller overrides.
+		"object":  "chat.completion.chunk",
+		"created": getCurrentTimestamp(),
+		"model":   model,
+		"choices": []interface{}{},
+	}
+
+	choices := []interface{}{}
+	for i, candidate := range geminiResp.Candidates {
+		choice := map[string]interface{}{
+			"index":         i,
+			"finish_reason": nil,
+		}
+
+		delta := map[string]interface{}{}
+
+		// Handle content
+		if candidate.Content != nil {
+			var content string
+			for _, part := range candidate.Content.Parts {
+				if part.Text != "" {
+					content += part.Text
+				}
+			}
+			if content != "" {
+				delta["content"] = content
+			}
+			// Only send role on first chunk? Gemini sends full structure often.
+			// Ideally we track state, but for now sending role in every chunk is often tolerated or we check emptiness.
+			// Gemini candidates often contain the whole accumulated content or just the delta? 
+			// The API docs say "Response stream... Returns the generated content...".
+			// Native Gemini stream chunks usually contain the *delta* text in `text`.
+		}
+		
+		choice["delta"] = delta
+		
+		if candidate.FinishReason != "" {
+			choice["finish_reason"] = convertFinishReason(candidate.FinishReason)
+		}
+		
+		choices = append(choices, choice)
+	}
+
+	openAIChunk["choices"] = choices
+	
+	// Handle usage if present (Gemini sends it at the end)
+	if geminiResp.UsageMetadata != nil {
+		openAIChunk["usage"] = map[string]interface{}{
+			"prompt_tokens":     geminiResp.UsageMetadata.PromptTokenCount,
+			"completion_tokens": geminiResp.UsageMetadata.CandidatesTokenCount,
+			"total_tokens":      geminiResp.UsageMetadata.TotalTokenCount,
+		}
+	}
+
+	return openAIChunk, nil
+}
 // FromOpenAIRequest converts OpenAI format to Gemini format
 func (c *GeminiConverter) FromOpenAIRequest(req interface{}) (interface{}, error) {
 	// Convert OpenAI request format to Gemini format

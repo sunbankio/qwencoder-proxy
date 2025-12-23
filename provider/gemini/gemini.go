@@ -529,7 +529,8 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 		return nil, fmt.Errorf("failed to marshal request: %w", marshalErr)
 	}
 
-	url := fmt.Sprintf("%s:streamGenerateContent", p.baseURL)
+	// Add the crucial alt=sse query parameter for streaming
+	url := fmt.Sprintf("%s:streamGenerateContent?alt=sse", p.baseURL)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -587,7 +588,6 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 		if err != nil {
 			return nil, fmt.Errorf("failed to send retry request: %w", err)
 		}
-		defer retryResp.Body.Close()
 		
 		if retryResp.StatusCode != http.StatusOK {
 			retryBody, _ := io.ReadAll(retryResp.Body)

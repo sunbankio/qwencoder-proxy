@@ -238,11 +238,12 @@ func validateStreamResponse(body io.Reader) error {
 			continue
 		}
 
-		if !strings.HasPrefix(line, "data: ") {
+		if !strings.HasPrefix(line, "data:") {
 			return fmt.Errorf("invalid stream line format: %s", line)
 		}
 
-		data := strings.TrimPrefix(line, "data: ")
+		data := strings.TrimPrefix(line, "data:")
+		data = strings.TrimPrefix(data, " ") // Remove leading space if present
 		if data == "[DONE]" {
 			hasDone = true
 			continue
@@ -271,7 +272,7 @@ func validateStreamResponse(body io.Reader) error {
 		return fmt.Errorf("stream finished but no content received")
 	}
 	if !hasDone {
-		return fmt.Errorf("stream finished but [DONE] message not received")
+		fmt.Printf("WARNING: [DONE] message not received (this is normal for some providers like iFlow)\n")
 	}
 
 	return nil

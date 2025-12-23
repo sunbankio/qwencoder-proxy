@@ -169,8 +169,16 @@ func (h *OpenAIHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 	isStreaming, _ := openaiReq["stream"].(bool)
 	if isStreaming {
-		if err := StreamResponse(w, r, h.factory, p, nativeReq, model, h.logger); err != nil {
-			h.logger.ErrorLog("[Handler] Streaming error: %v", err)
+		// Use converted streaming for providers that need format conversion
+		if needsStreamConversion(p.Protocol()) {
+			if err := ConvertedStreamResponse(w, r, h.factory, p, nativeReq, model, h.logger); err != nil {
+				h.logger.ErrorLog("[Handler] Converted streaming error: %v", err)
+			}
+		} else {
+			// Use raw streaming for providers that already format correctly (like Kiro)
+			if err := StreamResponse(w, r, h.factory, p, nativeReq, model, h.logger); err != nil {
+				h.logger.ErrorLog("[Handler] Raw streaming error: %v", err)
+			}
 		}
 	} else {
 		h.handleNonStreamCompletions(w, r, p, conv, nativeReq, model)
@@ -202,6 +210,21 @@ func (h *OpenAIHandler) handleNonStreamCompletions(w http.ResponseWriter, r *htt
 	h.factory.RecordSuccess(model, p.Name())
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// needsStreamConversion determines if a provider protocol needs stream format conversion
+func needsStreamConversion(protocol provider.ProtocolType) bool {
+	switch protocol {
+	case provider.ProtocolGemini, provider.ProtocolQwen:
+		// These providers return raw API streams that need conversion to OpenAI SSE format
+		return true
+	case provider.ProtocolClaude, provider.ProtocolOpenAI:
+		// These providers already format their streams correctly
+		return false
+	default:
+		// Default to conversion for unknown protocols
+		return true
+	}
 }
 
 // RegisterOpenAIRoutes registers all OpenAI-compatible routes

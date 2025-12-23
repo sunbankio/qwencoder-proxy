@@ -130,20 +130,12 @@ func (h *GeminiHandler) handleStreamGenerateContent(w http.ResponseWriter, r *ht
 		return
 	}
 
-	ctx := r.Context()
-	stream, err := h.provider.GenerateContentStream(ctx, model, &request)
-	if err != nil {
-		h.logger.ErrorLog("[Gemini Handler] StreamGenerateContent failed: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer stream.Close()
-
-	// Set streaming headers
-	SetStreamingHeaders(w)
-
-	if err := CopyStreamToResponse(w, stream, h.logger); err != nil {
+	// Create a minimal factory for the converter (this is a temporary solution)
+	// In a real implementation, the factory should be passed to the handler
+	factory := &provider.Factory{}
+	if err := ConvertedStreamResponse(w, r, factory, h.provider, &request, model, h.logger); err != nil {
 		h.logger.ErrorLog("[Gemini Handler] Stream error: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 

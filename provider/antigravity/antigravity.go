@@ -815,8 +815,8 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 		return nil, fmt.Errorf("failed to marshal antigravity request: %w", err)
 	}
 
-	// Use the correct streaming endpoint
-	url := fmt.Sprintf("%s/%s:streamGenerateContent", p.getBaseURLForModel(actualModel), APIVersion)
+	// Use the correct streaming endpoint with alt=sse parameter
+	url := fmt.Sprintf("%s/%s:streamGenerateContent?alt=sse", p.getBaseURLForModel(actualModel), APIVersion)
 
 	reqFunc := func(token string) (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
