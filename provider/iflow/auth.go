@@ -93,76 +93,210 @@ func (a *Authenticator) Authenticate(ctx context.Context) error {
 	return nil
 }
 
-// GetToken returns a valid access token, refreshing if necessary
+// GetToken returns a valid API key for LLM calls, refreshing if necessary
+
 func (a *Authenticator) GetToken(ctx context.Context) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 
-	// Load credentials if not loaded
-	if a.credentials == nil {
-		a.loadCredentials()
-	}
+        a.mu.Lock()
 
-	// Check if we have credentials
-	if a.credentials == nil || a.credentials.AccessToken == "" {
-		return "", fmt.Errorf("no valid credentials available")
-	}
+        defer a.mu.Unlock()
 
-	// Convert to oauth2.Token
-	token := &oauth2.Token{
-		AccessToken:  a.credentials.AccessToken,
-		RefreshToken: a.credentials.RefreshToken,
-		TokenType:    a.credentials.TokenType,
-	}
 
-	// Parse expiry if available
-	if a.credentials.ExpiresAt != "" {
-		if expiry, err := time.Parse(time.RFC3339, a.credentials.ExpiresAt); err == nil {
-			token.Expiry = expiry
-		}
-	}
 
-	// Setup OAuth2 config for iFlow
-	conf := &oauth2.Config{
-		ClientID:     a.config.ClientID,
-		ClientSecret: a.config.ClientSecret,
-		Endpoint: oauth2.Endpoint{
-			AuthURL:  AuthURL,
-			TokenURL: TokenURL,
-		},
-	}
+        // Load credentials if not loaded
 
-	// Create a context with the custom HTTP client
-	oauth2Context := context.WithValue(ctx, oauth2.HTTPClient, a.httpClient)
+        if a.credentials == nil {
 
-	// Create TokenSource with the current token
-	ts := conf.TokenSource(oauth2Context, token)
+                a.loadCredentials()
 
-	// Get token (this will refresh if needed)
-	newToken, err := ts.Token()
-	if err != nil {
-		a.logger.ErrorLog("[iFlow Auth] Token refresh failed: %v", err)
-		return "", fmt.Errorf("failed to refresh token: %w", err)
-	}
+        }
 
-	// Update credentials if token changed
-	if newToken.AccessToken != a.credentials.AccessToken || newToken.RefreshToken != a.credentials.RefreshToken {
-		a.logger.InfoLog("[iFlow Auth] Token refreshed successfully, saving credentials")
-		
-		a.credentials.AccessToken = newToken.AccessToken
-		a.credentials.RefreshToken = newToken.RefreshToken
-		a.credentials.TokenType = newToken.TokenType
-		if !newToken.Expiry.IsZero() {
-			a.credentials.ExpiresAt = newToken.Expiry.Format(time.RFC3339)
-		}
 
-		if err := a.saveCredentials(); err != nil {
-			a.logger.ErrorLog("Failed to save refreshed credentials: %v", err)
-		}
-	}
 
-	// Always return the access token for API calls, not the API key
-	return a.credentials.AccessToken, nil
+        // Check if we have credentials
+
+        if a.credentials == nil || a.credentials.AccessToken == "" {
+
+                return "", fmt.Errorf("no valid credentials available")
+
+        }
+
+
+
+        // Convert to oauth2.Token
+
+        token := &oauth2.Token{
+
+                AccessToken:  a.credentials.AccessToken,
+
+                RefreshToken: a.credentials.RefreshToken,
+
+                TokenType:    a.credentials.TokenType,
+
+        }
+
+
+
+        // Parse expiry if available
+
+        if a.credentials.ExpiresAt != "" {
+
+                if expiry, err := time.Parse(time.RFC3339, a.credentials.ExpiresAt); err == nil {
+
+                        token.Expiry = expiry
+
+                }
+
+        }
+
+
+
+        // Setup OAuth2 config for iFlow
+
+        conf := &oauth2.Config{
+
+                ClientID:     a.config.ClientID,
+
+                ClientSecret: a.config.ClientSecret,
+
+                Endpoint: oauth2.Endpoint{
+
+                        AuthURL:  AuthURL,
+
+                        TokenURL: TokenURL,
+
+                },
+
+        }
+
+
+
+        // Create a context with the custom HTTP client
+
+        oauth2Context := context.WithValue(ctx, oauth2.HTTPClient, a.httpClient)
+
+
+
+        // Create TokenSource with the current token
+
+        ts := conf.TokenSource(oauth2Context, token)
+
+
+
+        // Get token (this will refresh if needed)
+
+        newToken, err := ts.Token()
+
+        if err != nil {
+
+                a.logger.ErrorLog("[iFlow Auth] Token refresh failed: %v", err)
+
+                return "", fmt.Errorf("failed to refresh token: %w", err)
+
+        }
+
+
+
+        // Update credentials if token changed
+
+        if newToken.AccessToken != a.credentials.AccessToken || newToken.RefreshToken != a.credentials.RefreshToken {
+
+                a.logger.InfoLog("[iFlow Auth] Token refreshed successfully, saving credentials")
+
+
+
+                a.credentials.AccessToken = newToken.AccessToken
+
+                a.credentials.RefreshToken = newToken.RefreshToken
+
+                a.credentials.TokenType = newToken.TokenType
+
+                                if !newToken.Expiry.IsZero() {
+
+                                        a.credentials.ExpiresAt = newToken.Expiry.Format(time.RFC3339)
+
+                                        a.credentials.ExpiryDate = newToken.Expiry.UnixMilli()
+
+                                }
+
+
+
+                // Fetch user info and API key after refresh
+
+                if err := a.fetchUserInfo(); err != nil {
+
+                        a.logger.ErrorLog("[iFlow Auth] Failed to fetch user info after refresh: %v", err)
+
+                } else {
+
+                        a.logger.InfoLog("[iFlow Auth] User info and API key updated successfully")
+
+                }
+
+
+
+                if err := a.saveCredentials(); err != nil {
+
+                        a.logger.ErrorLog("Failed to save refreshed credentials: %v", err)
+
+                }
+
+        }
+
+
+
+        // If we still don't have an API key, try to fetch it
+
+        if a.credentials.APIKey == "" {
+
+                if err := a.fetchUserInfo(); err != nil {
+
+                        a.logger.ErrorLog("[iFlow Auth] Failed to fetch API key: %v", err)
+
+                } else {
+
+                        a.saveCredentials()
+
+                }
+
+        }
+
+
+
+        // Return the API key for LLM calls, as requested by the user
+
+        if a.credentials.APIKey != "" {
+
+                return a.credentials.APIKey, nil
+
+        }
+
+
+
+        // Fallback to AccessToken if APIKey is still not available (should not happen)
+
+        return a.credentials.AccessToken, nil
+
+}
+
+
+
+// GetAPIKey returns the stored API key
+
+func (a *Authenticator) GetAPIKey() string {
+
+        a.mu.RLock()
+
+        defer a.mu.RUnlock()
+
+        if a.credentials == nil {
+
+                return ""
+
+        }
+
+        return a.credentials.APIKey
+
 }
 
 // IsAuthenticated checks if valid credentials exist
@@ -203,61 +337,121 @@ func (a *Authenticator) ClearCredentials() error {
 
 // loadCredentials loads credentials from file
 func (a *Authenticator) loadCredentials() {
-	credsPath := a.GetCredentialsPath()
-	
-	data, err := os.ReadFile(credsPath)
-	if err != nil {
-		return
-	}
+        credsPath := a.GetCredentialsPath()
 
-	var creds Credentials
-	if err := json.Unmarshal(data, &creds); err != nil {
-		return
-	}
+        data, err := os.ReadFile(credsPath)
+        if err != nil {
+                return
+        }
 
-	a.credentials = &creds
-		
-	// Ensure auth_type is set if empty
-	if a.credentials.AuthType == "" {
-		a.credentials.AuthType = "oauth"
-	}
-	if a.credentials.Type == "" {
-		a.credentials.Type = "iflow"
-	}
-		
-	// If we have access token but no API key, try to fetch user info
-	if a.credentials.APIKey == "" && a.credentials.AccessToken != "" {
-		if err := a.fetchUserInfo(); err != nil {
-			a.logger.DebugLog("[iFlow] Failed to fetch user info during load: %v", err)
-		}
-	}
+        // Try to load as OAuthFileCredentials first (strict user format)
+        var fileCreds OAuthFileCredentials
+        if err := json.Unmarshal(data, &fileCreds); err == nil && fileCreds.AccessToken != "" {
+                // Map to internal struct
+                creds := &Credentials{
+                        AuthType:     "oauth",
+                        Type:         "iflow",
+                        AccessToken:  fileCreds.AccessToken,
+                        RefreshToken: fileCreds.RefreshToken,
+                        TokenType:    fileCreds.TokenType,
+                        Scope:        fileCreds.Scope,
+                        APIKey:       fileCreds.APIKey,
+                        ExpiryDate:   fileCreds.ExpiryDate,
+                }
+
+                // Convert expiry date (millis) to RFC3339 string for internal use
+                if fileCreds.ExpiryDate > 0 {
+                        t := time.UnixMilli(fileCreds.ExpiryDate)
+                        creds.ExpiresAt = t.Format(time.RFC3339)
+                        creds.Expire = creds.ExpiresAt
+                }
+
+                a.credentials = creds
+                
+                // If we have access token but no API key, try to fetch user info
+                if a.credentials.APIKey == "" && a.credentials.AccessToken != "" {
+                        if err := a.fetchUserInfo(); err != nil {
+                                a.logger.DebugLog("[iFlow] Failed to fetch user info during load: %v", err)
+                        }
+                }
+                return
+        }
+
+        // Fallback to standard loading
+        var creds Credentials
+        if err := json.Unmarshal(data, &creds); err != nil {
+                return
+        }
+
+        a.credentials = &creds
+
+        // Ensure auth_type is set if empty
+        if a.credentials.AuthType == "" {
+                a.credentials.AuthType = "oauth"
+        }
+        if a.credentials.Type == "" {
+                a.credentials.Type = "iflow"
+        }
+
+        // If we have access token but no API key, try to fetch user info
+        if a.credentials.APIKey == "" && a.credentials.AccessToken != "" {
+                if err := a.fetchUserInfo(); err != nil {
+                        a.logger.DebugLog("[iFlow] Failed to fetch user info during load: %v", err)
+                }
+        }
 }
 
 // saveCredentials saves credentials to file
 func (a *Authenticator) saveCredentials() error {
-	if a.credentials == nil {
-		return fmt.Errorf("no credentials to save")
-	}
+        if a.credentials == nil {
+                return fmt.Errorf("no credentials to save")
+        }
 
-	credsPath := a.GetCredentialsPath()
-	
-	// Create directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(credsPath), 0700); err != nil {
-		return fmt.Errorf("failed to create credentials directory: %w", err)
-	}
+        credsPath := a.GetCredentialsPath()
 
-	data, err := json.MarshalIndent(a.credentials, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal credentials: %w", err)
-	}
+        // Create directory if it doesn't exist
+        if err := os.MkdirAll(filepath.Dir(credsPath), 0700); err != nil {
+                return fmt.Errorf("failed to create credentials directory: %w", err)
+        }
 
-	if err := os.WriteFile(credsPath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write credentials file: %w", err)
-	}
+        var data []byte
+        var err error
 
-	return nil
+        // Use strict format for OAuth
+        if a.credentials.AuthType == "oauth" {
+                fileCreds := OAuthFileCredentials{
+                        AccessToken:  a.credentials.AccessToken,
+                        RefreshToken: a.credentials.RefreshToken,
+                        TokenType:    a.credentials.TokenType,
+                        Scope:        a.credentials.Scope,
+                        APIKey:       a.credentials.APIKey,
+                }
+
+                // Handle ExpiryDate
+                if a.credentials.ExpiryDate > 0 {
+                        fileCreds.ExpiryDate = a.credentials.ExpiryDate
+                } else if a.credentials.ExpiresAt != "" {
+                        if t, err := time.Parse(time.RFC3339, a.credentials.ExpiresAt); err == nil {
+                                fileCreds.ExpiryDate = t.UnixMilli()
+                        }
+                }
+
+                data, err = json.MarshalIndent(fileCreds, "", "  ")
+        } else {
+                // Standard format for others
+                data, err = json.MarshalIndent(a.credentials, "", "  ")
+        }
+
+        if err != nil {
+                return fmt.Errorf("failed to marshal credentials: %w", err)
+        }
+
+        if err := os.WriteFile(credsPath, data, 0600); err != nil {
+                return fmt.Errorf("failed to write credentials file: %w", err)
+        }
+
+        return nil
 }
-
 // generatePKCECodes generates PKCE codes for OAuth2
 func (a *Authenticator) generatePKCECodes() (*PKCECodes, error) {
 	// Generate 96 random bytes for code verifier
@@ -385,19 +579,19 @@ func (a *Authenticator) exchangeCodeForTokens(code string, pkceCodes *PKCECodes)
 		return fmt.Errorf("no access_token in response")
 	}
 
-	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-
-	a.credentials = &Credentials{
-		AuthType:     "oauth",
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		TokenType:    tokenResp.TokenType,
-		Expire:       expiresAt.Format(time.RFC3339),
-		ExpiresAt:    expiresAt.Format(time.RFC3339),
-		LastRefresh:  time.Now().Format(time.RFC3339),
-		Type:         "iflow",
-	}
-
+	        expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	
+	        a.credentials = &Credentials{
+	                AuthType:     "oauth",
+	                AccessToken:  tokenResp.AccessToken,
+	                RefreshToken: tokenResp.RefreshToken,
+	                TokenType:    tokenResp.TokenType,
+	                Expire:       expiresAt.Format(time.RFC3339),
+	                ExpiresAt:    expiresAt.Format(time.RFC3339),
+	                ExpiryDate:   expiresAt.UnixMilli(),
+	                LastRefresh:  time.Now().Format(time.RFC3339),
+	                Type:         "iflow",
+	        }
 	// Fetch user info and API key
 	if err := a.fetchUserInfo(); err != nil {
 		a.logger.DebugLog("[iFlow] Failed to fetch user info: %v", err)

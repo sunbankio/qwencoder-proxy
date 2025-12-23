@@ -7,22 +7,32 @@ import (
 
 // Credentials represents the stored OAuth credentials for iFlow
 type Credentials struct {
-	AuthType       string `json:"auth_type"`        // "oauth" or "cookie"
-	AccessToken    string `json:"access_token,omitempty"`
-	RefreshToken   string `json:"refresh_token,omitempty"`
-	Expire         string `json:"expire,omitempty"`
-	ExpiresAt      string `json:"expires_at,omitempty"`
-	Cookies        string `json:"cookies,omitempty"`
-	CookieExpiresAt string `json:"cookie_expires_at,omitempty"`
-	Email          string `json:"email,omitempty"`
-	UserID         string `json:"user_id,omitempty"`
-	LastRefresh    string `json:"last_refresh,omitempty"`
-	APIKey         string `json:"api_key,omitempty"`
-	TokenType      string `json:"token_type,omitempty"`
-	Scope          string `json:"scope,omitempty"`
-	Type           string `json:"type"`             // "iflow"
+        AuthType       string `json:"auth_type"`        // "oauth" or "cookie"
+        AccessToken    string `json:"access_token,omitempty"`
+        RefreshToken   string `json:"refresh_token,omitempty"`
+        Expire         string `json:"expire,omitempty"`
+        ExpiresAt      string `json:"expires_at,omitempty"`
+        ExpiryDate     int64  `json:"expiry_date,omitempty"` // Added to match user's file format
+        Cookies        string `json:"cookies,omitempty"`
+        CookieExpiresAt string `json:"cookie_expires_at,omitempty"`
+        Email          string `json:"email,omitempty"`
+        UserID         string `json:"user_id,omitempty"`
+        LastRefresh    string `json:"last_refresh,omitempty"`
+        APIKey         string `json:"apiKey,omitempty"`      // Changed tag to "apiKey"
+        TokenType      string `json:"token_type,omitempty"`
+        Scope          string `json:"scope,omitempty"`
+        Type           string `json:"type"`             // "iflow"
 }
 
+// OAuthFileCredentials represents the exact file structure required by the user
+type OAuthFileCredentials struct {
+        AccessToken  string `json:"access_token"`
+        RefreshToken string `json:"refresh_token"`
+        ExpiryDate   int64  `json:"expiry_date"`
+        TokenType    string `json:"token_type"`
+        Scope        string `json:"scope"`
+        APIKey       string `json:"apiKey"`
+}
 // KeyData represents API key information from iFlow
 type KeyData struct {
 	APIKey     string `json:"api_key"`

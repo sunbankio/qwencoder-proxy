@@ -123,7 +123,6 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token: %w", err)
 	}
-	// token = "sk-e45551c6be94614a233caff2633a415e"
 
 	tokenPrefix := token
 	if len(token) > 20 {
@@ -146,7 +145,7 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "iflow-cli/2512")
+	req.Header.Set("User-Agent", "iflow-cli/0.4.8")
 
 	p.logger.DebugLog("[iFlow] Sending chat completions request to %s", url)
 
