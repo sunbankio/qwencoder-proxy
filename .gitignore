@@ -1,2 +1,17 @@
 reference/
 .vscode/settings.json
+
+# Binaries
+main
+qwencoder-proxy
+*.test
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+iflow.test
+
+# Logs
+*.log
