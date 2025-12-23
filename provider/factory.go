@@ -13,6 +13,14 @@ import (
 // ModelProviderMap maps models to the providers that support them
 type ModelProviderMap map[string][]Provider
 
+// OpenAIModel represents an OpenAI-compatible model object
+type OpenAIModel struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
 // Factory manages provider instances
 type Factory struct {
 	providers      map[ProviderType]Provider
@@ -125,7 +133,7 @@ func (f *Factory) List() []Provider {
 func (f *Factory) ListTypes() []ProviderType {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	
+
 	types := make([]ProviderType, 0, len(f.providers))
 	for t := range f.providers {
 		types = append(types, t)
@@ -150,7 +158,7 @@ func (f *Factory) PopulateModelProviders(ctx context.Context) error {
 				continue
 			}
 		}
-		
+
 		modelsData, err := provider.ListModels(ctx)
 		if err != nil {
 			// Log the error but continue with other providers
@@ -166,7 +174,7 @@ func (f *Factory) PopulateModelProviders(ctx context.Context) error {
 			if _, exists := f.modelProviders[modelName]; !exists {
 				f.modelProviders[modelName] = []Provider{}
 			}
-			
+
 			// Check if this provider is already in the list for this model
 			alreadyAdded := false
 			for _, existingProvider := range f.modelProviders[modelName] {
@@ -175,7 +183,7 @@ func (f *Factory) PopulateModelProviders(ctx context.Context) error {
 					break
 				}
 			}
-			
+
 			if !alreadyAdded {
 				f.modelProviders[modelName] = append(f.modelProviders[modelName], provider)
 			}
@@ -275,7 +283,7 @@ func (f *Factory) GetModelProviders(model string) []Provider {
 	if !exists {
 		return nil
 	}
-	
+
 	// Return a copy to prevent external modification
 	result := make([]Provider, len(candidates))
 	copy(result, candidates)
@@ -294,7 +302,7 @@ func (f *Factory) GetLastSuccessProvider(model string) (ProviderType, bool) {
 // extractModelNames extracts model names from various response formats
 func (f *Factory) extractModelNames(data interface{}) []string {
 	var modelNames []string
-	
+
 	// Try to convert to map to handle structured responses
 	if dataMap, ok := f.convertToMap(data); ok {
 		// Handle models field (common in Gemini/Antigravity responses)
@@ -304,17 +312,15 @@ func (f *Factory) extractModelNames(data interface{}) []string {
 					if itemMap, ok := item.(map[string]interface{}); ok {
 						if id, exists := itemMap["id"].(string); exists {
 							modelNames = append(modelNames, id)
-						}
-						// Also check for name field
-						if name, exists := itemMap["name"].(string); exists {
+						} else if name, exists := itemMap["name"].(string); exists {
 							modelNames = append(modelNames, name)
 						}
 					}
 				}
 			}
 		}
-		
-		// Handle data field (common in OpenAI-style responses)
+
+		// Handle data field (common in OpenAI-style responses or iFlow)
 		if dataField, exists := dataMap["data"]; exists {
 			if dataArray, ok := dataField.([]interface{}); ok {
 				for _, item := range dataArray {
@@ -336,8 +342,28 @@ func (f *Factory) extractModelNames(data interface{}) []string {
 			}
 		}
 	}
-	
+
 	return modelNames
+}
+
+// FormatOpenAIModels converts native model data into OpenAI-compatible format
+func (f *Factory) FormatOpenAIModels(data interface{}, providerType ProviderType) []OpenAIModel {
+	names := f.extractModelNames(data)
+	ownedBy := string(providerType)
+	if providerType == ProviderGeminiCLI {
+		ownedBy = "gemini"
+	}
+
+	models := make([]OpenAIModel, 0, len(names))
+	for _, name := range names {
+		models = append(models, OpenAIModel{
+			ID:      name,
+			Object:  "model",
+			Created: 1677648736,
+			OwnedBy: ownedBy,
+		})
+	}
+	return models
 }
 
 // convertToMap attempts to convert various response types to a map for processing

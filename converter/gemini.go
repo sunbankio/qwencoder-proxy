@@ -4,6 +4,7 @@ package converter
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/sunbankio/qwencoder-proxy/provider"
 	"github.com/sunbankio/qwencoder-proxy/provider/gemini"
@@ -40,23 +41,23 @@ func (c *GeminiConverter) ToOpenAIResponse(native interface{}, model string) (in
 
 	// Create OpenAI-compatible response
 	openAIResp := map[string]interface{}{
-		"id":    "chatcmpl-" + generateID(),
-		"object": "chat.completion",
+		"id":      "chatcmpl-" + generateID(),
+		"object":  "chat.completion",
 		"created": getCurrentTimestamp(),
-		"model": model,
+		"model":   model,
 		"choices": []interface{}{},
 		"usage": map[string]interface{}{
-			"prompt_tokens": 0,
+			"prompt_tokens":     0,
 			"completion_tokens": 0,
-			"total_tokens": 0,
+			"total_tokens":      0,
 		},
 	}
 
 	if geminiResp.UsageMetadata != nil {
 		openAIResp["usage"] = map[string]interface{}{
-			"prompt_tokens": geminiResp.UsageMetadata.PromptTokenCount,
+			"prompt_tokens":     geminiResp.UsageMetadata.PromptTokenCount,
 			"completion_tokens": geminiResp.UsageMetadata.CandidatesTokenCount,
-			"total_tokens": geminiResp.UsageMetadata.TotalTokenCount,
+			"total_tokens":      geminiResp.UsageMetadata.TotalTokenCount,
 		}
 	}
 
@@ -114,7 +115,7 @@ func (c *GeminiConverter) FromOpenAIRequest(req interface{}) (interface{}, error
 			if msgMap, ok := msg.(map[string]interface{}); ok {
 				role, _ := msgMap["role"].(string)
 				content := convertContent(msgMap["content"])
-				
+
 				// Map OpenAI roles to Gemini roles
 				geminiRole := role
 				if role == "system" {
@@ -129,7 +130,7 @@ func (c *GeminiConverter) FromOpenAIRequest(req interface{}) (interface{}, error
 				} else if role == "user" {
 					geminiRole = "user"
 				}
-				
+
 				geminiReq.Contents = append(geminiReq.Contents, gemini.Content{
 					Role:  geminiRole,
 					Parts: []gemini.Part{{Text: content}},
@@ -180,7 +181,7 @@ func convertContent(content interface{}) string {
 	if contentStr, ok := content.(string); ok {
 		return contentStr
 	}
-	
+
 	// Handle content as array of content parts (for vision models)
 	if contentArr, ok := content.([]interface{}); ok {
 		var result string
@@ -195,7 +196,7 @@ func convertContent(content interface{}) string {
 		}
 		return result
 	}
-	
+
 	return fmt.Sprintf("%v", content)
 }
 
@@ -215,11 +216,9 @@ func convertFinishReason(geminiFinishReason string) string {
 }
 
 func generateID() string {
-	// Simple ID generation for demo purposes
-	return "gen_123456"
+	return fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 }
 
 func getCurrentTimestamp() int64 {
-	// Simple timestamp for demo purposes
-	return 1234567890
+	return time.Now().Unix()
 }

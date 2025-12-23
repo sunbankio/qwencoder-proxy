@@ -123,6 +123,13 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token: %w", err)
 	}
+	// token = "sk-e45551c6be94614a233caff2633a415e"
+
+	tokenPrefix := token
+	if len(token) > 20 {
+		tokenPrefix = token[:20]
+	}
+	p.logger.DebugLog("[iFlow] Using access token (first 20 chars): %s", tokenPrefix)
 
 	// Marshal the request
 	reqBody, err := json.Marshal(request)
@@ -139,7 +146,7 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "qwencoder-proxy/1.0")
+	req.Header.Set("User-Agent", "iflow-cli/2512")
 
 	p.logger.DebugLog("[iFlow] Sending chat completions request to %s", url)
 
@@ -148,6 +155,9 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	p.logger.DebugLog("[iFlow] Response status: %d", resp.StatusCode)
+	p.logger.DebugLog("[iFlow] Response headers: %v", resp.Header)
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		// Try to refresh token and retry
@@ -170,11 +180,19 @@ func (p *Provider) GenerateContent(ctx context.Context, model string, request in
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		p.logger.DebugLog("[iFlow] API error response body: %s", string(body))
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	p.logger.DebugLog("[iFlow] Raw response body: %s", string(respBody))
+
 	var chatResp OpenAIChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -212,6 +230,9 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
+	p.logger.DebugLog("[iFlow] Streaming response status: %d", resp.StatusCode)
+	p.logger.DebugLog("[iFlow] Streaming response headers: %v", resp.Header)
+
 	if resp.StatusCode == http.StatusUnauthorized {
 		// Try to refresh token and retry
 		_, refreshErr := p.authenticator.GetToken(ctx)
@@ -234,6 +255,7 @@ func (p *Provider) GenerateContentStream(ctx context.Context, model string, requ
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		p.logger.DebugLog("[iFlow] Streaming API error response body: %s", string(body))
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 

@@ -13,11 +13,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/sunbankio/qwencoder-proxy/logging"
+	"golang.org/x/oauth2"
 )
 
 // OAuthConfig holds the OAuth configuration for iFlow
@@ -47,6 +47,7 @@ type Authenticator struct {
 	mu          sync.RWMutex
 	logger      *logging.Logger
 	httpClient  *http.Client
+	tokenSource oauth2.TokenSource
 }
 
 // NewAuthenticator creates a new iFlow authenticator
@@ -102,22 +103,65 @@ func (a *Authenticator) GetToken(ctx context.Context) (string, error) {
 		a.loadCredentials()
 	}
 
-	// Check if credentials are valid
-	if !a.credentials.IsValid() {
-		if a.credentials.RefreshToken != "" {
-			// Try to refresh token
-			if err := a.refreshToken(); err != nil {
-				return "", fmt.Errorf("failed to refresh token: %w", err)
-			}
-		} else {
-			return "", fmt.Errorf("no valid credentials available")
+	// Check if we have credentials
+	if a.credentials == nil || a.credentials.AccessToken == "" {
+		return "", fmt.Errorf("no valid credentials available")
+	}
+
+	// Convert to oauth2.Token
+	token := &oauth2.Token{
+		AccessToken:  a.credentials.AccessToken,
+		RefreshToken: a.credentials.RefreshToken,
+		TokenType:    a.credentials.TokenType,
+	}
+
+	// Parse expiry if available
+	if a.credentials.ExpiresAt != "" {
+		if expiry, err := time.Parse(time.RFC3339, a.credentials.ExpiresAt); err == nil {
+			token.Expiry = expiry
 		}
 	}
 
-	// Prefer API key over access token for API calls
-	if a.credentials.APIKey != "" {
-		return a.credentials.APIKey, nil
+	// Setup OAuth2 config for iFlow
+	conf := &oauth2.Config{
+		ClientID:     a.config.ClientID,
+		ClientSecret: a.config.ClientSecret,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  AuthURL,
+			TokenURL: TokenURL,
+		},
 	}
+
+	// Create a context with the custom HTTP client
+	oauth2Context := context.WithValue(ctx, oauth2.HTTPClient, a.httpClient)
+
+	// Create TokenSource with the current token
+	ts := conf.TokenSource(oauth2Context, token)
+
+	// Get token (this will refresh if needed)
+	newToken, err := ts.Token()
+	if err != nil {
+		a.logger.ErrorLog("[iFlow Auth] Token refresh failed: %v", err)
+		return "", fmt.Errorf("failed to refresh token: %w", err)
+	}
+
+	// Update credentials if token changed
+	if newToken.AccessToken != a.credentials.AccessToken || newToken.RefreshToken != a.credentials.RefreshToken {
+		a.logger.InfoLog("[iFlow Auth] Token refreshed successfully, saving credentials")
+		
+		a.credentials.AccessToken = newToken.AccessToken
+		a.credentials.RefreshToken = newToken.RefreshToken
+		a.credentials.TokenType = newToken.TokenType
+		if !newToken.Expiry.IsZero() {
+			a.credentials.ExpiresAt = newToken.Expiry.Format(time.RFC3339)
+		}
+
+		if err := a.saveCredentials(); err != nil {
+			a.logger.ErrorLog("Failed to save refreshed credentials: %v", err)
+		}
+	}
+
+	// Always return the access token for API calls, not the API key
 	return a.credentials.AccessToken, nil
 }
 
@@ -173,13 +217,21 @@ func (a *Authenticator) loadCredentials() {
 
 	a.credentials = &creds
 		
-		// If we have access token but no API key, try to fetch user info
-		if a.credentials.APIKey == "" && a.credentials.AccessToken != "" {
-			if err := a.fetchUserInfo(); err != nil {
-				a.logger.DebugLog("[iFlow] Failed to fetch user info during load: %v", err)
-			}
+	// Ensure auth_type is set if empty
+	if a.credentials.AuthType == "" {
+		a.credentials.AuthType = "oauth"
+	}
+	if a.credentials.Type == "" {
+		a.credentials.Type = "iflow"
+	}
+		
+	// If we have access token but no API key, try to fetch user info
+	if a.credentials.APIKey == "" && a.credentials.AccessToken != "" {
+		if err := a.fetchUserInfo(); err != nil {
+			a.logger.DebugLog("[iFlow] Failed to fetch user info during load: %v", err)
 		}
 	}
+}
 
 // saveCredentials saves credentials to file
 func (a *Authenticator) saveCredentials() error {
@@ -288,15 +340,17 @@ func (a *Authenticator) waitForCallback(ctx context.Context, timeout time.Durati
 
 // exchangeCodeForTokens exchanges authorization code for tokens
 func (a *Authenticator) exchangeCodeForTokens(code string, pkceCodes *PKCECodes) error {
-	params := url.Values{
-		"grant_type":    {"authorization_code"},
-		"client_id":     {a.config.ClientID},
-		"code":          {code},
-		"redirect_uri":  {a.getRedirectURI()},
-		"code_verifier": {pkceCodes.CodeVerifier},
-	}
+	// Create token request with PKCE
+	tokenURL := fmt.Sprintf("%s?grant_type=authorization_code&client_id=%s&client_secret=%s&code=%s&redirect_uri=%s&code_verifier=%s",
+		TokenURL,
+		url.QueryEscape(a.config.ClientID),
+		url.QueryEscape(a.config.ClientSecret),
+		url.QueryEscape(code),
+		url.QueryEscape(a.getRedirectURI()),
+		url.QueryEscape(pkceCodes.CodeVerifier),
+	)
 
-	req, err := http.NewRequest("POST", TokenURL, strings.NewReader(params.Encode()))
+	req, err := http.NewRequest("POST", tokenURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create token request: %w", err)
 	}
@@ -315,31 +369,31 @@ func (a *Authenticator) exchangeCodeForTokens(code string, pkceCodes *PKCECodes)
 		return fmt.Errorf("token exchange failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	var tokenResp map[string]interface{}
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int64  `json:"expires_in"`
+		Scope        string `json:"scope"`
+	}
+
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
 		return fmt.Errorf("failed to decode token response: %w", err)
 	}
 
-	accessToken, ok := tokenResp["access_token"].(string)
-	if !ok {
+	if tokenResp.AccessToken == "" {
 		return fmt.Errorf("no access_token in response")
 	}
 
-	refreshToken, _ := tokenResp["refresh_token"].(string)
-	expiresIn, _ := tokenResp["expires_in"].(float64)
-	email, _ := tokenResp["email"].(string)
-	userID, _ := tokenResp["user_id"].(string)
-
-	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
+	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 
 	a.credentials = &Credentials{
 		AuthType:     "oauth",
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		TokenType:    tokenResp.TokenType,
 		Expire:       expiresAt.Format(time.RFC3339),
 		ExpiresAt:    expiresAt.Format(time.RFC3339),
-		Email:        email,
-		UserID:       userID,
 		LastRefresh:  time.Now().Format(time.RFC3339),
 		Type:         "iflow",
 	}
@@ -348,81 +402,6 @@ func (a *Authenticator) exchangeCodeForTokens(code string, pkceCodes *PKCECodes)
 	if err := a.fetchUserInfo(); err != nil {
 		a.logger.DebugLog("[iFlow] Failed to fetch user info: %v", err)
 		// Don't fail the exchange, just log the error
-	}
-
-	return a.saveCredentials()
-}
-
-// refreshToken refreshes the access token using refresh token
-func (a *Authenticator) refreshToken() error {
-	if a.credentials == nil || a.credentials.RefreshToken == "" {
-		return fmt.Errorf("no refresh token available")
-	}
-
-	// Build Basic Auth header
-	basicAuth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", a.config.ClientID, a.config.ClientSecret)))
-
-	params := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {a.credentials.RefreshToken},
-		"client_id":     {a.config.ClientID},
-		"client_secret": {a.config.ClientSecret},
-	}
-
-	req, err := http.NewRequest("POST", TokenURL, strings.NewReader(params.Encode()))
-	if err != nil {
-		return fmt.Errorf("failed to create refresh request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Basic %s", basicAuth))
-
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send refresh request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("token refresh failed (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var tokenResp map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return fmt.Errorf("failed to decode refresh response: %w", err)
-	}
-
-	accessToken, ok := tokenResp["access_token"].(string)
-	if !ok {
-		return fmt.Errorf("no access_token in refresh response")
-	}
-
-	a.credentials.AccessToken = accessToken
-
-	if rt, ok := tokenResp["refresh_token"].(string); ok {
-		a.credentials.RefreshToken = rt
-	}
-
-	if tokenType, ok := tokenResp["token_type"].(string); ok {
-		a.credentials.TokenType = tokenType
-	}
-
-	if scope, ok := tokenResp["scope"].(string); ok {
-		a.credentials.Scope = scope
-	}
-
-	expiresIn, _ := tokenResp["expires_in"].(float64)
-	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
-	a.credentials.Expire = expiresAt.Format(time.RFC3339)
-	a.credentials.ExpiresAt = expiresAt.Format(time.RFC3339)
-	a.credentials.LastRefresh = time.Now().Format(time.RFC3339)
-
-	// Fetch user info and API key after refresh
-	if err := a.fetchUserInfo(); err != nil {
-		a.logger.DebugLog("[iFlow] Failed to fetch user info after refresh: %v", err)
-		// Don't fail the refresh, just log the error
 	}
 
 	return a.saveCredentials()

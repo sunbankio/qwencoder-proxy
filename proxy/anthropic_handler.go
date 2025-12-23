@@ -3,7 +3,6 @@ package proxy
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 
@@ -124,35 +123,10 @@ func (h *AnthropicHandler) handleStreamMessages(w http.ResponseWriter, r *http.R
 	defer stream.Close()
 
 	// Set streaming headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Transfer-Encoding", "chunked")
+	SetStreamingHeaders(w)
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
-		return
-	}
-
-	// Stream the response
-	buf := make([]byte, 4096)
-	for {
-		n, err := stream.Read(buf)
-		if n > 0 {
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				h.logger.ErrorLog("[Anthropic Handler] Write error: %v", writeErr)
-				return
-			}
-			flusher.Flush()
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			h.logger.ErrorLog("[Anthropic Handler] Stream read error: %v", err)
-			return
-		}
+	if err := CopyStreamToResponse(w, stream, h.logger); err != nil {
+		h.logger.ErrorLog("[Anthropic Handler] Stream error: %v", err)
 	}
 }
 

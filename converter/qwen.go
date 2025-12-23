@@ -18,24 +18,20 @@ func NewQwenConverter() *QwenConverter {
 
 // ToOpenAIRequest converts Qwen format to OpenAI format
 func (c *QwenConverter) ToOpenAIRequest(native interface{}) (interface{}, error) {
-	// For now, return as-is - we'll implement proper conversion later
 	return native, nil
 }
 
 // ToOpenAIResponse converts Qwen format to OpenAI format
 func (c *QwenConverter) ToOpenAIResponse(native interface{}, model string) (interface{}, error) {
-	// Convert Qwen response to OpenAI format
 	qwenResp, ok := native.(map[string]interface{})
 	if !ok {
 		return native, nil
 	}
 
-	// Check if it's an error response
 	if qwenResp["error"] != nil {
 		return native, nil
 	}
 
-	// Convert Qwen response to OpenAI format
 	openAIResp := map[string]interface{}{
 		"id":      fmt.Sprintf("chatcmpl-%s", model),
 		"object":  "chat.completion",
@@ -49,138 +45,72 @@ func (c *QwenConverter) ToOpenAIResponse(native interface{}, model string) (inte
 		},
 	}
 
-	// Handle different Qwen response formats
-	if choicesData, exists := qwenResp["choices"]; exists {
-		// If choices is already in the expected format
-		if choices, ok := choicesData.([]interface{}); ok {
-			var openAIChoices []interface{}
-			for i, choice := range choices {
-				if choiceMap, ok := choice.(map[string]interface{}); ok {
-					message := map[string]interface{}{
-						"role":    "assistant",
-						"content": "",
-					}
-					
-					if msg, msgExists := choiceMap["message"]; msgExists {
-						if msgMap, msgOk := msg.(map[string]interface{}); msgOk {
-							if content, contentOk := msgMap["content"].(string); contentOk {
-								message["content"] = content
-							} else if content, contentOk := msgMap["content"]; contentOk {
-								// Handle content as interface{} if it's not a string
-								if contentStr, ok := content.(string); ok {
-									message["content"] = contentStr
-								}
-							}
-						}
-					}
-					
-					finishReason := "stop"
-					if reason, reasonExists := choiceMap["finish_reason"]; reasonExists {
-						if reasonStr, ok := reason.(string); ok {
-							finishReason = reasonStr
-						}
-					}
-					
-					openAIChoice := map[string]interface{}{
-						"index":   i,
-						"message": message,
-						"finish_reason": finishReason,
-					}
-					openAIChoices = append(openAIChoices, openAIChoice)
-				}
-			}
-			openAIResp["choices"] = openAIChoices
+	// Helper to extract choices from a map
+	extractChoices := func(m map[string]interface{}) ([]interface{}, bool) {
+		if choices, ok := m["choices"].([]interface{}); ok {
+			return choices, true
 		}
-	} else if output, ok := qwenResp["output"].(map[string]interface{}); ok {
-		// Handle the output.choices format
-		if choices, ok := output["choices"].([]interface{}); ok && len(choices) > 0 {
-			var openAIChoices []interface{}
-			for i, choice := range choices {
-				if choiceMap, ok := choice.(map[string]interface{}); ok {
-					message := map[string]interface{}{
-						"role":    "assistant",
-						"content": "",
-					}
-					
-					if msg, exists := choiceMap["message"]; exists {
-						if msgMap, msgOk := msg.(map[string]interface{}); msgOk {
-							if content, contentOk := msgMap["content"].(string); contentOk {
-								message["content"] = content
-							} else if content, contentOk := msgMap["content"]; contentOk {
-								if contentStr, ok := content.(string); ok {
-									message["content"] = contentStr
-								}
-							}
-						}
-					}
-					
-					finishReason := "stop"
-					if reason, reasonExists := choiceMap["finish_reason"]; reasonExists {
-						if reasonStr, ok := reason.(string); ok {
-							finishReason = reasonStr
-						}
-					}
-					
-					openAIChoice := map[string]interface{}{
-						"index":   i,
-						"message": message,
-						"finish_reason": finishReason,
-					}
-					openAIChoices = append(openAIChoices, openAIChoice)
-				}
+		if output, ok := m["output"].(map[string]interface{}); ok {
+			if choices, ok := output["choices"].([]interface{}); ok {
+				return choices, true
 			}
-			openAIResp["choices"] = openAIChoices
 		}
+		return nil, false
 	}
 
-	// Handle usage if present
-	if usage, exists := qwenResp["usage"]; exists {
-		if usageMap, ok := usage.(map[string]interface{}); ok {
-			if promptTokens, ok := usageMap["prompt_tokens"]; ok {
-				if pt, ok := promptTokens.(float64); ok {
-					openAIResp["usage"].(map[string]interface{})["prompt_tokens"] = int(pt)
-				} else if pt, ok := promptTokens.(int); ok {
-					openAIResp["usage"].(map[string]interface{})["prompt_tokens"] = pt
-				}
-			}
-			if completionTokens, ok := usageMap["completion_tokens"]; ok {
-				if ct, ok := completionTokens.(float64); ok {
-					openAIResp["usage"].(map[string]interface{})["completion_tokens"] = int(ct)
-				} else if ct, ok := completionTokens.(int); ok {
-					openAIResp["usage"].(map[string]interface{})["completion_tokens"] = ct
-				}
-			}
-			if totalTokens, ok := usageMap["total_tokens"]; ok {
-				if tt, ok := totalTokens.(float64); ok {
-					openAIResp["usage"].(map[string]interface{})["total_tokens"] = int(tt)
-				} else if tt, ok := totalTokens.(int); ok {
-					openAIResp["usage"].(map[string]interface{})["total_tokens"] = tt
-				}
+	// Helper to extract usage from a map
+	extractUsage := func(m map[string]interface{}) (map[string]interface{}, bool) {
+		if usage, ok := m["usage"].(map[string]interface{}); ok {
+			return usage, true
+		}
+		if output, ok := m["output"].(map[string]interface{}); ok {
+			if usage, ok := output["usage"].(map[string]interface{}); ok {
+				return usage, true
 			}
 		}
-	} else if output, ok := qwenResp["output"].(map[string]interface{}); ok {
-		if usage, exists := output["usage"]; exists {
-			if usageMap, ok := usage.(map[string]interface{}); ok {
-				if promptTokens, ok := usageMap["prompt_tokens"]; ok {
-					if pt, ok := promptTokens.(float64); ok {
-						openAIResp["usage"].(map[string]interface{})["prompt_tokens"] = int(pt)
-					} else if pt, ok := promptTokens.(int); ok {
-						openAIResp["usage"].(map[string]interface{})["prompt_tokens"] = pt
+		return nil, false
+	}
+
+	if choices, ok := extractChoices(qwenResp); ok {
+		var openAIChoices []interface{}
+		for i, choice := range choices {
+			if choiceMap, ok := choice.(map[string]interface{}); ok {
+				content := ""
+				if msg, exists := choiceMap["message"]; exists {
+					if msgMap, msgOk := msg.(map[string]interface{}); msgOk {
+						if c, ok := msgMap["content"].(string); ok {
+							content = c
+						}
 					}
 				}
-				if completionTokens, ok := usageMap["completion_tokens"]; ok {
-					if ct, ok := completionTokens.(float64); ok {
-						openAIResp["usage"].(map[string]interface{})["completion_tokens"] = int(ct)
-					} else if ct, ok := completionTokens.(int); ok {
-						openAIResp["usage"].(map[string]interface{})["completion_tokens"] = ct
-					}
+
+				finishReason := "stop"
+				if reason, ok := choiceMap["finish_reason"].(string); ok {
+					finishReason = reason
 				}
-				if totalTokens, ok := usageMap["total_tokens"]; ok {
-					if tt, ok := totalTokens.(float64); ok {
-						openAIResp["usage"].(map[string]interface{})["total_tokens"] = int(tt)
-					} else if tt, ok := totalTokens.(int); ok {
-						openAIResp["usage"].(map[string]interface{})["total_tokens"] = tt
-					}
+
+				openAIChoices = append(openAIChoices, map[string]interface{}{
+					"index": i,
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": content,
+					},
+					"finish_reason": finishReason,
+				})
+			}
+		}
+		openAIResp["choices"] = openAIChoices
+	}
+
+	if usage, ok := extractUsage(qwenResp); ok {
+		targetUsage := openAIResp["usage"].(map[string]interface{})
+		keys := []string{"prompt_tokens", "completion_tokens", "total_tokens"}
+		for _, key := range keys {
+			if val, ok := usage[key]; ok {
+				if fval, ok := val.(float64); ok {
+					targetUsage[key] = int(fval)
+				} else if ival, ok := val.(int); ok {
+					targetUsage[key] = ival
 				}
 			}
 		}
@@ -191,20 +121,16 @@ func (c *QwenConverter) ToOpenAIResponse(native interface{}, model string) (inte
 
 // ToOpenAIStreamChunk converts Qwen format to OpenAI format
 func (c *QwenConverter) ToOpenAIStreamChunk(native interface{}, model string) (interface{}, error) {
-	// For now, return as-is - we'll implement proper conversion later
 	return native, nil
 }
 
 // FromOpenAIRequest converts OpenAI format to Qwen format
-// For Qwen API, we can pass through the OpenAI format as-is since Qwen supports OpenAI-compatible format
 func (c *QwenConverter) FromOpenAIRequest(req interface{}) (interface{}, error) {
-	// For Qwen API, we can pass the OpenAI request format directly since Qwen supports OpenAI-compatible format
 	return req, nil
 }
 
 // FromOpenAIResponse converts OpenAI format to Qwen format
 func (c *QwenConverter) FromOpenAIResponse(resp interface{}) (interface{}, error) {
-	// For now, return as-is - we'll implement proper conversion later
 	return resp, nil
 }
 
