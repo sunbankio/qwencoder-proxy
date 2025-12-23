@@ -1,4 +1,4 @@
-package iflow
+package auth
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func TestRealIFlowAuthFlow(t *testing.T) {
 	t.Log("This test demonstrates loading credentials, refreshing tokens, and retrieving the API Key.")
 
 	// Create authenticator using default config (~/.iflow/oauth_creds.json)
-	auth := NewAuthenticator(nil)
+	auth := NewIFlowAuthenticator(nil)
 
 	// Step 1: Check initial status
 	if !auth.IsAuthenticated() {
@@ -100,7 +100,7 @@ func TestOAuthFlowAPIKeyExtraction(t *testing.T) {
 		return
 	}
 
-	var creds Credentials
+	var creds IFlowCredentials
 	if err := json.Unmarshal(credsData, &creds); err != nil {
 		t.Fatalf("Failed to parse credentials: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestOAuthFlowAPIKeyExtraction(t *testing.T) {
 	// Step 1: Test the exact user info endpoint as used in iflow.rs
 	t.Log("\n--- Step 1: Fetch User Info with API Key (matching iflow.rs implementation) ---")
 
-	userInfoURL := fmt.Sprintf("%s?accessToken=%s", UserInfoURL, url.QueryEscape(creds.AccessToken))
+	userInfoURL := fmt.Sprintf("%s?accessToken=%s", IFlowUserInfoURL, url.QueryEscape(creds.AccessToken))
 
 	t.Logf("User Info URL: %s", userInfoURL)
 
@@ -281,11 +281,11 @@ func TestOAuthFlowAPIKeyExtraction(t *testing.T) {
 
 	t.Logf("✓ Credentials updated and saved")
 
-	// Step 4: Test the complete flow with token refresh
+	// Step 4: Test Complete Flow with Token Refresh
 	t.Log("\n--- Step 4: Test Complete Flow with Token Refresh ---")
 
 	// Force token expiry to trigger refresh
-	auth := NewAuthenticator(nil)
+	auth := NewIFlowAuthenticator(nil)
 	auth.credentials = &creds
 
 	// Mock expiry by setting past time
@@ -332,7 +332,7 @@ func TestAPIKeyExtractionFromTokenExchange(t *testing.T) {
 		return
 	}
 
-	var creds Credentials
+	var creds IFlowCredentials
 	if err := json.Unmarshal(credsData, &creds); err != nil {
 		t.Fatalf("Failed to parse credentials: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestAPIKeyExtractionFromTokenExchange(t *testing.T) {
 	// Simulate the user info fetch that happens after token exchange
 	// This matches the logic in exchange_iflow_code_for_token in iflow.rs
 
-	userInfoURL := fmt.Sprintf("%s?accessToken=%s", UserInfoURL, url.QueryEscape(creds.AccessToken))
+	userInfoURL := fmt.Sprintf("%s?accessToken=%s", IFlowUserInfoURL, url.QueryEscape(creds.AccessToken))
 
 	t.Logf("Fetching user info for API key extraction...")
 
@@ -404,14 +404,14 @@ func TestAPIKeyExtractionFromTokenExchange(t *testing.T) {
 	}
 
 	// Create credentials object as in iflow.rs
-	extractedCreds := Credentials{
-		AuthType:     "oauth",
-		AccessToken:  creds.AccessToken,
-		RefreshToken: creds.RefreshToken,
-		APIKey:       apiKey,
-		Email:        email,
-		Type:         "iflow",
-		LastRefresh:  time.Now().Format(time.RFC3339),
+	extractedCreds := IFlowCredentials{
+		AuthType: "oauth",
+		// AccessToken:  creds.AccessToken, // Removed
+		// RefreshToken: creds.RefreshToken, // Removed
+		APIKey: apiKey,
+		Email:  email,
+		// Type:         "iflow", // Removed
+		// LastRefresh:  time.Now().Format(time.RFC3339), // Removed
 	}
 
 	t.Logf("Extracted credentials:")
@@ -439,7 +439,7 @@ func TestRealTokenRefreshDirect(t *testing.T) {
 		return
 	}
 
-	var creds Credentials
+	var creds IFlowCredentials
 	if err := json.Unmarshal(credsData, &creds); err != nil {
 		t.Fatalf("Failed to parse credentials: %v", err)
 	}
@@ -455,14 +455,14 @@ func TestRealTokenRefreshDirect(t *testing.T) {
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", creds.RefreshToken)
-	data.Set("client_id", ClientID)
-	data.Set("client_secret", ClientSecret)
+	data.Set("client_id", IFlowClientID)
+	data.Set("client_secret", IFlowClientSecret)
 
 	// Create Basic Auth header
-	authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte(ClientID+":"+ClientSecret))
+	authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte(IFlowClientID+":"+IFlowClientSecret))
 
 	// Create request
-	req, err := http.NewRequest("POST", TokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequest("POST", IFlowTokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestRealTokenRefreshDirect(t *testing.T) {
 
 	// Log request details
 	t.Logf("Token refresh request:")
-	t.Logf("  URL: %s", TokenURL)
+	t.Logf("  URL: %s", IFlowTokenURL)
 	t.Logf("  Method: %s", req.Method)
 	t.Logf("  Headers:")
 	for key, values := range req.Header {
@@ -486,7 +486,7 @@ func TestRealTokenRefreshDirect(t *testing.T) {
 		}
 	}
 	t.Logf("  Body: grant_type=refresh_token&refresh_token=%s...&client_id=%s&client_secret=%s",
-		creds.RefreshToken[:10], ClientID, "***")
+		creds.RefreshToken[:10], IFlowClientID, "***")
 
 	// Make request
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -568,7 +568,7 @@ func TestRealAPIKeyRefresh(t *testing.T) {
 		return
 	}
 
-	var creds Credentials
+	var creds IFlowCredentials
 	if err := json.Unmarshal(credsData, &creds); err != nil {
 		t.Fatalf("Failed to parse credentials: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestRealAPIKeyRefresh(t *testing.T) {
 	// Step 1: Get current API key info
 	t.Log("\n--- Step 1: Get Current API Key Info ---")
 
-	req, err := http.NewRequest("GET", APIKeyURL, nil)
+	req, err := http.NewRequest("GET", IFlowAPIKeyURL, nil)
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
@@ -634,7 +634,7 @@ func TestRealAPIKeyRefresh(t *testing.T) {
 	refreshBody := map[string]string{"name": apiKeyName}
 	bodyData, _ := json.Marshal(refreshBody)
 
-	req, err = http.NewRequest("POST", APIKeyURL, strings.NewReader(string(bodyData)))
+	req, err = http.NewRequest("POST", IFlowAPIKeyURL, strings.NewReader(string(bodyData)))
 	if err != nil {
 		t.Fatalf("Failed to create POST request: %v", err)
 	}
@@ -698,7 +698,7 @@ func TestRealAPIKeyRefresh(t *testing.T) {
 
 // TestManualRefresh demonstrates manual token refresh using oauth2
 func TestManualRefresh(t *testing.T) {
-	auth := NewAuthenticator(nil)
+	auth := NewIFlowAuthenticator(nil)
 
 	if !auth.IsAuthenticated() {
 		t.Log("No valid credentials found. Please authenticate first.")
@@ -738,8 +738,8 @@ func TestManualRefresh(t *testing.T) {
 		ClientID:     auth.config.ClientID,
 		ClientSecret: auth.config.ClientSecret,
 		Endpoint: oauth2.Endpoint{
-			AuthURL:  AuthURL,
-			TokenURL: TokenURL,
+			AuthURL:  IFlowAuthURL,
+			TokenURL: IFlowTokenURL,
 		},
 	}
 
@@ -799,7 +799,7 @@ func TestManualRefresh(t *testing.T) {
 
 // TestRawRefreshResponse makes a direct HTTP request to see the raw response
 func TestRawRefreshResponse(t *testing.T) {
-	auth := NewAuthenticator(nil)
+	auth := NewIFlowAuthenticator(nil)
 
 	if !auth.IsAuthenticated() {
 		t.Log("No valid credentials found. Please authenticate first.")
@@ -831,7 +831,7 @@ func TestRawRefreshResponse(t *testing.T) {
 	authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth.config.ClientID+":"+auth.config.ClientSecret))
 
 	// Create the request
-	req, err := http.NewRequest("POST", TokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequest("POST", IFlowTokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
@@ -912,7 +912,7 @@ func TestRawRefreshResponse(t *testing.T) {
 
 // TestUserInfoResponse tests the user info endpoint to see if it contains API key
 func TestUserInfoResponse(t *testing.T) {
-	auth := NewAuthenticator(nil)
+	auth := NewIFlowAuthenticator(nil)
 
 	if !auth.IsAuthenticated() {
 		t.Log("No valid credentials found. Please authenticate first.")
@@ -930,7 +930,7 @@ func TestUserInfoResponse(t *testing.T) {
 	}
 
 	// Create the user info URL (matching iflow.rs implementation)
-	userInfoURL := fmt.Sprintf("%s?accessToken=%s", UserInfoURL, url.QueryEscape(creds.AccessToken))
+	userInfoURL := fmt.Sprintf("%s?accessToken=%s", IFlowUserInfoURL, url.QueryEscape(creds.AccessToken))
 
 	// Create the request
 	req, err := http.NewRequest("GET", userInfoURL, nil)

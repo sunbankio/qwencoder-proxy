@@ -65,9 +65,9 @@ func main() {
 	factory.Register(antigravityProvider)
 
 	// Register iFlow provider
-	iflowAuth := iflowProvider.NewAuthenticator(nil)
-	iflowProvider := iflowProvider.NewProvider(iflowAuth)
-	factory.Register(iflowProvider)
+	iflowAuth := auth.NewIFlowAuthenticator(nil)
+	iflowProv := iflowProvider.NewProvider(iflowAuth)
+	factory.Register(iflowProv)
 
 	// Create converter factory
 	convFactory := converter.NewFactory()
@@ -158,7 +158,7 @@ func main() {
 
 	// iFlow
 	log.Println("Checking iFlow credentials...")
-	if _, err := iflowProvider.GetAuthenticator().GetToken(ctx); err != nil {
+	if _, err := iflowProv.GetAuthenticator().GetToken(ctx); err != nil {
 		log.Printf("Warning: iFlow credentials check failed: %v", err)
 	} else {
 		log.Println("iFlow credentials are valid.")

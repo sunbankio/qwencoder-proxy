@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sunbankio/qwencoder-proxy/auth"
 	"github.com/sunbankio/qwencoder-proxy/logging"
 	"github.com/sunbankio/qwencoder-proxy/provider"
 )
@@ -42,15 +43,15 @@ var SupportedModels = []string{
 // Provider implements the provider.Provider interface for iFlow
 type Provider struct {
 	baseURL       string
-	authenticator *Authenticator
+	authenticator *auth.IFlowAuthenticator
 	httpClient    *http.Client
 	logger        *logging.Logger
 }
 
 // NewProvider creates a new iFlow provider
-func NewProvider(authenticator *Authenticator) *Provider {
+func NewProvider(authenticator *auth.IFlowAuthenticator) *Provider {
 	if authenticator == nil {
-		authenticator = NewAuthenticator(nil)
+		authenticator = auth.NewIFlowAuthenticator(nil)
 	}
 	return &Provider{
 		baseURL:       APIBaseURL,
